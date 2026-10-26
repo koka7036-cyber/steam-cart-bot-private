@@ -189,8 +189,9 @@ def send_funpay_chat_message(node_id, text):
         if not csrf_token or not user_id:
             return False, "Сессия FunPay не авторизована."
 
-        tag_m = re.search(r'data-tag="([^"]+)"', r.text)
-        chat_node = tag_m.group(1) if tag_m else str(node_id)
+        # node_id из URL /chat/?node=... — это ID чата.
+        # data-tag — служебный тег Runner, а не идентификатор чата.
+        chat_node = str(node_id)
         objects = [{"type": "chat_node", "id": chat_node, "tag": "00000000",
                     "data": {"node": chat_node, "last_message": -1, "content": ""}}]
         request_action = {"action": "chat_message",
@@ -276,7 +277,7 @@ def funpay_check_unread_chats():
                 is_order_payment = (
                     "оплатил" in lower_txt or "создан заказ" in lower_txt or
                     "переведите" in lower_txt or "заказ #" in lower_txt or
-                    bool(re.search(r"\\bзаказ\\s*#?\\d+", lower_txt))
+                    bool(re.search(r"\bзаказ\s*#?\d+", lower_txt))
                 )
                 sets_per_item, order_quantity = detect_order_sets_and_quantity(full_text)
                 mentions_product = any(term in lower_txt for term in
@@ -297,11 +298,11 @@ def funpay_check_unread_chats():
                         lines = []
                         for code in available_codes:
                             lines.append(f"Пин-код ({sets_per_item} сет.): {code}")
-                        codes_text = "\\n".join(lines)
+                        codes_text = "\n".join(lines)
                         auto_reply_text = (
-                            f"🤖 Автоматическая выдача 24/7!\\n"
-                            f"Заказ: {order_quantity} шт. × {sets_per_item} сет.\\n"
-                            f"{codes_text}\\n\\n"
+                            f"🤖 Автоматическая выдача 24/7!\n"
+                            f"Заказ: {order_quantity} шт. × {sets_per_item} сет.\n"
+                            f"{codes_text}\n\n"
                             f"👉 Для получения карточек отправьте каждый пин-код и вашу ТРЕЙД-ССЫЛКУ "
                             f"(не ссылку на профиль!) нашему боту в Telegram: @{BOT_USERNAME}"
                         )
@@ -315,26 +316,26 @@ def funpay_check_unread_chats():
                             save_json(DB_FILE, latest_db)
                             bot.send_message(
                                 admin_id,
-                                f"⚡️ **Автовыдача на FunPay сработала!**\\n"
-                                f"• Покупатель: {sender_name}\\n"
-                                f"• Лот: {sets_per_item} сет. × {order_quantity} шт.\\n"
+                                f"⚡️ **Автовыдача на FunPay сработала!**\n"
+                                f"• Покупатель: {sender_name}\n"
+                                f"• Лот: {sets_per_item} сет. × {order_quantity} шт.\n"
                                 f"• Выдано кодов: {len(available_codes)}",
                                 parse_mode="Markdown"
                             )
                         else:
                             bot.send_message(
                                 admin_id,
-                                f"❌ **Не удалось отправить коды на FunPay.**\\n"
-                                f"Покупатель: {sender_name}\\n"
-                                f"Заказ: {order_quantity} × {sets_per_item} сет.\\n"
+                                f"❌ **Не удалось отправить коды на FunPay.**\n"
+                                f"Покупатель: {sender_name}\n"
+                                f"Заказ: {order_quantity} × {sets_per_item} сет.\n"
                                 f"Коды не помечены выданными. Ошибка: {reply_err}"
                             )
                     else:
                         bot.send_message(
                             admin_id,
-                            f"⚠️ **Не хватает кодов FunPay!**\\n"
-                            f"Покупатель: {sender_name}\\n"
-                            f"Лот: {sets_per_item} сет. × {order_quantity} шт.\\n"
+                            f"⚠️ **Не хватает кодов FunPay!**\n"
+                            f"Покупатель: {sender_name}\n"
+                            f"Лот: {sets_per_item} сет. × {order_quantity} шт.\n"
                             f"Доступно кодов: {len(available_codes)} из {order_quantity}. "
                             f"Автоответ не отправлен, чтобы не выдать заказ частично."
                         )
