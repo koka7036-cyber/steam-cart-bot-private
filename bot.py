@@ -216,50 +216,7 @@ def send_funpay_chat_message(node_id, text):
         logging.exception("Ошибка отправки сообщения в FunPay, node=%s", node_id)
         return False, f"Ошибка отправки: {e}"
 
-def detect_order_sets_and_quantity(order_text):
-    """
-    Возвращает (sets_per_item, quantity). На FunPay продаются лоты на 1 или 5 сетов,
-    а количество экземпляров заказа может быть больше одного.
-    Не определяем размер лота по любой цифре в тексте: ищем именно описание лота.
-    """
-    t = html.unescape(order_text or "").lower().replace("ё", "е")
-
-    # Сначала определяем размер лота по явному описанию.
-    five_set_patterns = (
-        r"5\s*(?:полных\s*)?(?:сет(?:а|ов|ы)?|набор(?:а|ов|ы)?)",
-        r"(?:пять)\s*(?:полных\s*)?(?:сет(?:а|ов|ы)?|набор(?:а|ов|ы)?)",
-        r"25\s*карт",
-        r"500\s*xp",
-    )
-    one_set_patterns = (
-        r"1\s*(?:полный\s*)?(?:сет|набор)",
-        r"(?:один|одна)\s*(?:полный\s*)?(?:сет|набор)",
-        r"5\s*шт\s*=\s*100\s*xp",
-        r"100\s*xp",
-    )
-    sets_per_item = None
-    if any(re.search(p, t) for p in five_set_patterns):
-        sets_per_item = 5
-    elif any(re.search(p, t) for p in one_set_patterns):
-        sets_per_item = 1
-
-    # Количество экземпляров: предпочитаем явное поле заказа, а не цифры в названии.
-    quantity = 1
-    qty_patterns = (
-        r"(?:количество|кол-во|кол\.?|quantity|экземпляр(?:ов|а)?)\s*[:xх=]?\s*(\d{1,3})",
-        r"(?:x|х)\s*(\d{1,3})\b",
-        r"\b(\d{1,3})\s*(?:шт(?:ук)?|экземпляр(?:а|ов)?)\b",
-    )
-    for pattern in qty_patterns:
-        match = re.search(pattern, t)
-        if match:
-            try:
-                quantity = max(1, min(100, int(match.group(1))))
-                break
-            except (ValueError, IndexError):
-                pass
-
-    return sets_per_item, quantity
+from order_parser import detect_order_sets_and_quantity
 
 def funpay_check_unread_chats():
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
