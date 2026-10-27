@@ -42,6 +42,7 @@ try {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
     $secure.Dispose()
 }
+$token = $token.Trim()
 if ([string]::IsNullOrWhiteSpace($token)) {
     throw 'Empty token. Nothing was saved.'
 }
