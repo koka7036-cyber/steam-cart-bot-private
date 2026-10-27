@@ -339,16 +339,15 @@ def funpay_check_unread_chats():
                             save_json(DB_FILE, latest_db)
                             bot.send_message(
                                 admin_id,
-                                f"⚡️ **Автовыдача на FunPay сработала!**\n"
-                                f"• Покупатель: {sender_name}\n"
-                                f"• Лот: {sets_per_item} сет. × {order_quantity} шт.\n"
-                                f"• Выдано кодов: {len(available_codes)}",
-                                parse_mode="Markdown"
+                                f"⚡️ Автовыдача на FunPay сработала!\n"
+                                f"Покупатель: {sender_name}\n"
+                                f"Лот: {sets_per_item} сет. × {order_quantity} шт.\n"
+                                f"Выдано кодов: {len(available_codes)}"
                             )
                         else:
                             bot.send_message(
                                 admin_id,
-                                f"❌ **Не удалось отправить коды на FunPay.**\n"
+                                f"❌ Не удалось отправить коды на FunPay.\n"
                                 f"Покупатель: {sender_name}\n"
                                 f"Заказ: {order_quantity} × {sets_per_item} сет.\n"
                                 f"Коды не помечены выданными. Ошибка: {reply_err}"
@@ -356,7 +355,7 @@ def funpay_check_unread_chats():
                     else:
                         bot.send_message(
                             admin_id,
-                            f"⚠️ **Не хватает кодов FunPay!**\n"
+                            f"⚠️ Не хватает кодов FunPay!\n"
                             f"Покупатель: {sender_name}\n"
                             f"Лот: {sets_per_item} сет. × {order_quantity} шт.\n"
                             f"Доступно кодов: {len(available_codes)} из {order_quantity}. "
@@ -364,15 +363,14 @@ def funpay_check_unread_chats():
                         )
                 else:
                     markup = types.InlineKeyboardMarkup()
-                    markup.add(types.InlineKeyboardButton(f"✍️ Ответить ({sender_name})", callback_data=f"fpreply_{node_id}_{sender_name[:20]}"))
+                    markup.add(types.InlineKeyboardButton("✍️ Ответить покупателю", callback_data=f"fpreply_{node_id}"))
                     bot.send_message(
                         admin_id,
-                        f"💬 **Новое сообщение на FunPay!**\n"
-                        f"👤 От: **{sender_name}** (Чат `#node{node_id}`)\n\n"
-                        f"✉️ _{full_text}_\n\n"
-                        f"💡 *Сделай Reply (Ответить) на это сообщение или нажми кнопку ниже!*",
-                        reply_markup=markup,
-                        parse_mode="Markdown"
+                        f"💬 Новое сообщение на FunPay\n"
+                        f"От: {sender_name} (чат #node{node_id})\n\n"
+                        f"Сообщение: {full_text}\n\n"
+                        f"Нажми Reply на это сообщение или кнопку ниже.",
+                        reply_markup=markup
                     )
             elif "unread" not in classes and node_id not in seen_msgs:
                 seen_msgs[node_id] = sig
@@ -831,9 +829,8 @@ def callback_fp_reply(call):
     bot.answer_callback_query(call.id)
     bot.send_message(
         call.message.chat.id,
-        f"✍️ Напиши следующим сообщением свой ответ для покупателя **{buyer_name}** (чат `#node{node_id}`):\n"
-        f"_(или отправь /cancel для отмены)_",
-        parse_mode="Markdown"
+        f"✍️ Напиши следующим сообщением ответ покупателю (чат #node{node_id}).\n"
+        f"Отправь /cancel для отмены."
     )
 
 @bot.message_handler(func=lambda m: m.text == "🔄 Обновить кэш склада")
@@ -945,11 +942,11 @@ def handle_all_messages(message):
             target_node = active_reply_target[message.chat.id]
 
         if target_node:
-            bot.send_message(message.chat.id, f"⏳ Отправляю ответ в чат FunPay `#node{target_node}`...", parse_mode="Markdown")
+            bot.send_message(message.chat.id, f"⏳ Отправляю ответ в чат FunPay #node{target_node}...")
             ok, res_msg = send_funpay_chat_message(target_node, text)
             if ok:
                 active_reply_target.pop(message.chat.id, None)
-                bot.send_message(message.chat.id, f"✅ **Ответ отправлен на FunPay!**\n💬 _{text}_", parse_mode="Markdown")
+                bot.send_message(message.chat.id, f"✅ Ответ отправлен на FunPay!\nВаше сообщение: {text}")
             else:
                 bot.send_message(message.chat.id, f"❌ Не удалось отправить: {res_msg}\nРежим ответа оставлен включенным; можно повторить сообщение или отправить /cancel.")
             return
