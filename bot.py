@@ -246,6 +246,7 @@ def send_funpay_chat_message(node_id, text):
 
 from order_parser import detect_order_sets_and_quantity
 from funpay_orders import find_open_order_for_chat, mark_input_received, register_payment
+from sales_analytics import summarize_sales
 
 
 def load_funpay_orders():
@@ -785,6 +786,7 @@ def _execute_delivery_locked(chat_id, code, trade_url, db):
         return
 
     db["vouchers"][code]["used"] = True
+    db["vouchers"][code]["used_at"] = int(time.time())
     save_json(DB_FILE, db)
     save_json(CACHE_FILE, updated_cache)
     pending_customer_codes.pop(chat_id, None)
@@ -811,6 +813,61 @@ def _execute_delivery_locked(chat_id, code, trade_url, db):
         )
 
 # --- КЛАВИАТУРЫ ---
+
+def build_sales_analytics_text():
+    """Show stock health and code/offer counts without guessing revenue."""
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    cache = load_json(CACHE_FILE, {})
+    total_sets, _ = count_available_sets(cache) if cache else (0, [])
+    summary = summarize_sales(
+        db.get("vouchers", {}),
+        total_sets,
+        cache.get("updated_at") if isinstance(cache, dict) else None,
+    )
+
+    lines = ["📈 **ПРОДАЖИ И СОСТОЯНИЕ СКЛАДА**"]
+    lines.append(f"📦 Полных сетов в кэше: **{summary['stock_sets']}**")
+    updated_at = cache.get("updated_at") if isinstance(cache, dict) else None
+    if updated_at:
+        lines.append(f"🕒 Кэш обновлён: {time.strftime('%d.%m.%Y %H:%M', time.localtime(float(updated_at)))}")
+    else:
+        lines.append("🕒 Время обновления кэша неизвестно.")
+
+    if summary["cache_stale"]:
+        if summary["cache_age_seconds"] is None:
+            lines.append("⚠️ **Кэш не имеет времени обновления. Обнови склад перед выдачей.**")
+        else:
+            age_hours = summary["cache_age_seconds"] / 3600
+            lines.append(f"⚠️ **Кэш старше 6 часов ({age_hours:.1f} ч). Обнови склад перед выдачей.**")
+    else:
+        age_minutes = int(summary["cache_age_seconds"] // 60)
+        lines.append(f"✅ Возраст кэша: {age_minutes} мин.")
+
+    if summary["stock_state"] == "critical":
+        lines.append("🚨 **Критический остаток:** меньше 5 полных сетов.")
+    elif summary["stock_state"] == "low":
+        lines.append("⚠️ **Низкий остаток:** меньше 10 полных сетов.")
+
+    titles = {"funpay": "🟢 FunPay", "playerok": "🔵 Playerok"}
+    for platform in ("funpay", "playerok"):
+        stats = summary["by_platform"][platform]
+        lines.extend([
+            "",
+            f"**{titles[platform]}**",
+            f"• Всего создано кодов: **{stats['generated_codes']}** (сегодня: **{stats['generated_today']}**)",
+            f"• Неиспользованные коды: **{stats['unused_codes']}** — по 1 сету: **{stats['unused_1_set']}**, по 5 сетов: **{stats['unused_5_sets']}**",
+            f"• Отправлено предложений Steam: **{stats['offers_sent']}**; сетов в предложениях: **{stats['sets_sent']}**",
+            f"• Сегодня по новым временным отметкам: **{stats['offers_sent_today']}** предложений / **{stats['sets_sent_today']}** сетов",
+        ])
+
+    lines.extend([
+        "",
+        "ℹ️ «Отправлено предложений» означает, что Steam вернул ID предложения; это не подтверждает, что покупатель его принял.",
+        "📊 Доход и прибыль не рассчитываются: цены, комиссии и возвраты пока не записываются.",
+        "🗓 Дневная статистика точна только для кодов с временными отметками этой версии; старые коды остаются в общих итогах.",
+    ])
+    return "\n".join(lines)
+
 def build_admin_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("🔄 Обновить кэш склада", "📊 Остатки в кэше")
@@ -819,6 +876,7 @@ def build_admin_keyboard():
     auto_label = "⚙️ Автозапуск Windows: ВКЛ 🟢" if is_autostart_enabled() else "⚙️ Автозапуск Windows: ВЫКЛ 🔴"
     markup.add("🟢 Статус FunPay 24/7", auto_label)
     markup.add("📋 Панель FunPay — сводка")
+    markup.add("📈 Продажи и склад")
     return markup
 
 def build_customer_keyboard():
@@ -1196,7 +1254,8 @@ def gen_codes_formatted(message):
             "sets": sets_count,
             "used": False,
             "platform": platform_tag,
-            "sent_to_fp": False
+            "sent_to_fp": False,
+            "created_at": int(time.time())
         }
         if is_playerok:
             ready_lines.append(
@@ -1234,6 +1293,15 @@ def handle_all_messages(message):
     # Route the admin dashboard button here so it cannot be swallowed by this handler.
     if text == "📋 Панель FunPay — сводка" and message.chat.id == db.get("admin_id"):
         show_funpay_dashboard(message)
+        return
+
+    if text in {"📈 Продажи и склад", "/sales"} and message.chat.id == db.get("admin_id"):
+        bot.send_message(
+            message.chat.id,
+            build_sales_analytics_text(),
+            reply_markup=build_admin_keyboard(),
+            parse_mode="Markdown",
+        )
         return
 
     # 1. Ответ админа в чат FunPay
