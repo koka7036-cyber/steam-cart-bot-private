@@ -18,7 +18,10 @@ $files = @(
     'run_bot.ps1',
     'backup_bot.ps1',
     'funpay_config.json',
+    'funpay_config.paused.json',
     'inventory_cache.json',
+    'auto_update.log',
+    'bot_errors.log',
     'steam_session.json',
     'vouchers.json'
 )
