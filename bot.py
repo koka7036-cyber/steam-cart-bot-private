@@ -1185,6 +1185,12 @@ def handle_all_messages(message):
     text = (message.text or "").strip()
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
 
+    # The catch-all handler is registered before the dashboard-specific handler.
+    # Route the admin dashboard button here so it cannot be swallowed by this handler.
+    if text == "📋 Панель FunPay — сводка" and message.chat.id == db.get("admin_id"):
+        show_funpay_dashboard(message)
+        return
+
     # 1. Ответ админа в чат FunPay
     if message.chat.id == db.get("admin_id"):
         if text == "/cancel":
