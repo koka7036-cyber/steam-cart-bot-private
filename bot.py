@@ -963,6 +963,19 @@ def handle_all_messages(message):
     trade_url = url_match.group(1).replace("&amp;", "&") if url_match else None
     is_profile_link = bool(profile_url_match and not trade_url)
 
+    if text == "/cancel":
+        pending_code = pending_customer_codes.pop(message.chat.id, None)
+        if pending_code:
+            bot.send_message(message.chat.id, "❎ Сохраненный пин-код удален. Начните заново, отправив новый код.")
+        else:
+            bot.send_message(message.chat.id, "Сейчас нет сохраненного пин-кода для отмены.")
+        return
+
+    # Если покупатель отправил код и трейд-ссылку отдельными сообщениями,
+    # подставляем сохраненный код к следующей ссылке.
+    if not code and (trade_url or is_profile_link):
+        code = pending_customer_codes.get(message.chat.id)
+
     # Случай А: Прислали и пин-код, и настоящую трейд-ссылку
     if code and trade_url:
         if code not in db["vouchers"] or db["vouchers"][code]["used"]:
