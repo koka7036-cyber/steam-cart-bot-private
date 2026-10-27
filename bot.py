@@ -257,6 +257,18 @@ def load_funpay_orders():
     return data
 
 
+def get_funpay_delivery_policy():
+    """Read delivery preferences with a fail-closed default for this account."""
+    cfg = load_json(FP_CONFIG_FILE, {})
+    return {
+        "input_mode": str(cfg.get("delivery_input_mode", "file")).lower(),
+        "allow_chat_trade_url": cfg.get("allow_chat_trade_url") is True,
+        # This remains false regardless of preferences until the account has
+        # explicit written approval for a fully automated delivery method.
+        "auto_delivery": False,
+    }
+
+
 def restore_reservation_to_cache(reservation):
     """Put only a cancelled reservation back into the local inventory cache."""
     locations = reservation.get("asset_locations", []) if isinstance(reservation, dict) else []
@@ -327,10 +339,16 @@ def record_funpay_buyer_input(node_id, has_trade_url, has_file):
             return None
         input_kind = "chat_trade_url" if has_trade_url else "file_attachment"
         mark_input_received(record, input_kind)
-        if input_kind == "chat_trade_url":
+        policy = get_funpay_delivery_policy()
+        if input_kind == "chat_trade_url" and not policy["allow_chat_trade_url"]:
             record["status"] = "review"
             record.setdefault("notes", []).append(
-                "Трейд-ссылка обнаружена в чате, но автоматическая выдача отключена настройкой модерации."
+                "Трейд-ссылка обнаружена в чате, но этот способ отключен настройкой модерации."
+            )
+        elif not policy["auto_delivery"]:
+            record["status"] = "review"
+            record.setdefault("notes", []).append(
+                "Данные получены, но автоматическая выдача отключена защитой модерации."
             )
         save_json(FP_ORDERS_FILE, data)
         return record
