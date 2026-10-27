@@ -1102,13 +1102,25 @@ def check_fp_status(message):
     # are handled by the background worker, never by this read-only dashboard.
     status_icon = "🟢 ОНЛАЙН АКТИВЕН" if fp_state["online"] else "🔴 НЕ ПОДКЛЮЧЕН"
     auto_status = "ВКЛЮЧЕН 🟢" if is_autostart_enabled() else "ВЫКЛЮЧЕН 🔴"
+    cfg = load_json(FP_CONFIG_FILE, {})
+    golden_key_configured = bool(str(cfg.get("golden_key", "")).strip())
+    if fp_state.get("error"):
+        connection_detail = str(fp_state["error"])[:300]
+    elif not golden_key_configured:
+        connection_detail = "Ключ FunPay не настроен. Для подключения отправь /fp <golden_key> боту от имени администратора."
+    elif not fp_state.get("online"):
+        connection_detail = "Ключ сохранён, но соединение ещё не подтверждено. Подожди до 3 минут или повторно проверь ключ командой /fp."
+    else:
+        connection_detail = "Подключение подтверждено."
     text = (
         f"📡 **Статус системы FunPay:**\n\n"
         f"• Статус: **{status_icon}** (ID: `{fp_state['user_id']}`)\n"
         f"• Последний пинг: `{fp_state['last_ping']}`\n"
         f"• Автоподнятие лотов: `{fp_state['last_raise']}`\n"
+        f"• Диагностика: {connection_detail}\n"
         f"• Автовыдача FunPay: **Приостановлена до подтверждения разрешенного способа передачи**\n"
-        f"• Автозапуск Windows: **{auto_status}**"
+        f"• Автозапуск Windows: **{auto_status}**\n\n"
+        "🔐 Не отправляй golden_key в групповые чаты и не публикуй его в сообщениях покупателям."
     )
     bot.send_message(message.chat.id, text, reply_markup=build_admin_keyboard(), parse_mode="Markdown")
 
