@@ -205,3 +205,44 @@ def test_monitor_without_token_stays_disabled_without_network():
     status = monitor.status()
     assert status["state"] == "not_configured"
     assert status["auto_delivery"] is False
+
+
+def test_problem_deal_is_not_used_for_automatic_chat_matching():
+    orders = {}
+    upsert_deal(
+        orders, deal_id="problem-deal", status="PAID", item_id="one",
+        chat_id="problem-chat", sets=1, event_type="ITEM_PAID",
+    )
+    upsert_deal(
+        orders, deal_id="problem-deal", status="DEAL_HAS_PROBLEM", item_id="one",
+        chat_id="problem-chat", sets=1, event_type="DEAL_HAS_PROBLEM",
+    )
+    assert active_orders_for_chat(orders, "problem-chat") == []
+    assert summarize_orders(orders)["problem"] == 1
+
+
+def test_corrupted_untrusted_quantity_does_not_crash_ledger_sanitizer():
+    from playerok_orders import save_orders, load_orders
+
+    target = __import__("pathlib").Path("playerok_test_corrupt_tmp.json")
+    try:
+        save_orders(
+            {
+                "orders": {
+                    "d-corrupt": {
+                        "deal_id": "d-corrupt",
+                        "platform_status": "PAID",
+                        "fulfillment_status": "needs_review",
+                        "sets": ["not", "a", "number"],
+                        "trade_url": "https://steamcommunity.com/tradeoffer/new/?token=secret",
+                    }
+                }
+            },
+            target,
+        )
+        saved = load_orders(target)["orders"]["d-corrupt"]
+        assert saved["sets"] is None
+        assert "trade_url" not in saved
+    finally:
+        if target.exists():
+            target.unlink()
