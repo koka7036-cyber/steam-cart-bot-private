@@ -1058,20 +1058,20 @@ def handle_playerok_event(event):
         review = " Требуется ручная проверка ID лота." if not record or record.get("sets") not in (1, 5) else ""
         bot.send_message(
             admin_id,
-            f"🛒 <b>Новая сделка Playerok</b>\\nID: <code>{html.escape(str(deal_id))}</code>\\nЛот: {item_name}\\nКоличество: {sets_text} сет.\\nСтатус: <code>{html.escape(str(record.get('platform_status', 'unknown')))}</code>.\\nАвтовыдача выключена.{review}",
+            f"🛒 <b>Новая сделка Playerok</b>\nID: <code>{html.escape(str(deal_id))}</code>\nЛот: {item_name}\nКоличество: {sets_text} сет.\nСтатус: <code>{html.escape(str(record.get('platform_status', 'unknown')))}</code>.\nАвтовыдача выключена.{review}",
             parse_mode="HTML",
         )
     elif changed and record and record.get("platform_status") in {"sent", "confirmed", "rolled_back", "problem"}:
         bot.send_message(
             admin_id,
-            f"🔔 <b>Изменение сделки Playerok</b>\\nID: <code>{html.escape(str(record.get('deal_id')))}</code>\\nСтатус: <code>{html.escape(str(record.get('platform_status')))}</code>\\nАвтовыдача остаётся выключенной.",
+            f"🔔 <b>Изменение сделки Playerok</b>\nID: <code>{html.escape(str(record.get('deal_id')))}</code>\nСтатус: <code>{html.escape(str(record.get('platform_status')))}</code>\nАвтовыдача остаётся выключенной.",
             parse_mode="HTML",
         )
     if event.get("has_trade_url") and trade_link_result:
         if trade_link_result == "recorded":
             bot.send_message(
                 admin_id,
-                f"📥 В чате Playerok замечена трейд-ссылка.\\nСделка: <code>{html.escape(str(record.get('deal_id') if record else 'не сопоставлена'))}</code>. Сама ссылка не сохранялась. Проверь сделку вручную; автовыдача выключена.",
+                f"📥 В чате Playerok замечена трейд-ссылка.\nСделка: <code>{html.escape(str(record.get('deal_id') if record else 'не сопоставлена'))}</code>. Сама ссылка не сохранялась. Проверь сделку вручную; автовыдача выключена.",
                 parse_mode="HTML",
             )
         elif trade_link_result == "ambiguous":
