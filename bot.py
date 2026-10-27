@@ -7,6 +7,7 @@ import time
 import base64
 import random
 import string
+import tempfile
 import winreg
 import threading
 import urllib.parse
@@ -51,8 +52,21 @@ def load_json(filename, default):
     return default
 
 def save_json(filename, data):
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    target = os.path.abspath(filename)
+    directory = os.path.dirname(target)
+    fd, temp_path = tempfile.mkstemp(prefix=".cardbot-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, target)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
 
 logging.basicConfig(
     filename="bot_errors.log",
@@ -99,6 +113,7 @@ fp_state = {
 
 active_reply_target = {}
 pending_customer_codes = {}
+delivery_lock = threading.Lock()
 
 def get_fp_session():
     cfg = load_json(FP_CONFIG_FILE, {"golden_key": ""})
@@ -608,6 +623,18 @@ def send_trade_offer(trade_url, asset_ids, code):
     return True, f"Трейд #{offer_id} отправлен и подтвержден в ASF"
 
 def execute_delivery(chat_id, code, trade_url, db):
+    # pyTelegramBotAPI handles updates in multiple threads. Serialize delivery
+    # transactions and re-read the code under the lock to prevent duplicate trades.
+    with delivery_lock:
+        current_db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+        voucher = current_db.get("vouchers", {}).get(code)
+        if not isinstance(voucher, dict) or voucher.get("used"):
+            bot.send_message(chat_id, "❌ Этот пин-код не найден или уже был активирован ранее!")
+            return False
+        return _execute_delivery_locked(chat_id, code, trade_url, current_db)
+
+
+def _execute_delivery_locked(chat_id, code, trade_url, db):
     sets_needed = db["vouchers"][code]["sets"]
     platform_tag = db["vouchers"][code].get("platform", "funpay").upper()
     bot.send_message(chat_id, f"🔄 Код `{code}` проверен! Собираю **{sets_needed} полных сет(ов)** и отправляю трейд...", parse_mode="Markdown")
