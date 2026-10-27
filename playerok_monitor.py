@@ -142,7 +142,11 @@ class PlayerokMonitor:
             raise RuntimeError("Playerok account profile unavailable")
 
         listener = PlayerokAccountListener(account)
-        router = listener.router
+        # SDK 1.1.5 exposes its router as _router (some releases/documentation
+        # expose router publicly). Prefer public API if present, then fall back.
+        router = getattr(listener, "router", None) or getattr(listener, "_router", None)
+        if router is None:
+            raise RuntimeError("Playerok listener has no supported event router")
 
         async def publish(event_type: str, event: Any, event_account: Any = None) -> None:
             deal = _get(event, "deal")
@@ -217,7 +221,8 @@ class PlayerokMonitor:
         if installed == 0:
             raise RuntimeError("Playerok listener exposes no supported event routes")
 
-        listener.start()
+        # The SDK's start() is async and must be awaited inside this loop.
+        await listener.start()
         self._set_status("listening", username=str(username))
         # The SDK owns reconnects and websocket lifecycle. Keep the event loop alive.
         while True:
