@@ -1066,7 +1066,7 @@ def check_fp_status(message):
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
     if message.chat.id != db["admin_id"]:
         return
-    funpay_ping_and_raise(force_raise=True)
+    funpay_ping_and_raise(force_raise=False)
     status_icon = "🟢 ОНЛАЙН АКТИВЕН" if fp_state["online"] else "🔴 НЕ ПОДКЛЮЧЕН"
     auto_status = "ВКЛЮЧЕН 🟢" if is_autostart_enabled() else "ВЫКЛЮЧЕН 🔴"
     text = (
