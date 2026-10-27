@@ -195,3 +195,13 @@ def test_listing_name_redacts_urls_before_persistence():
     )
     assert "tradeoffer/new" not in record["item_name"]
     assert "never-store" not in record["item_name"]
+
+
+def test_monitor_without_token_stays_disabled_without_network():
+    from playerok_monitor import PlayerokMonitor
+
+    monitor = PlayerokMonitor(token="", one_set_item_id="i1", five_set_item_id="i5")
+    assert monitor.start() is False
+    status = monitor.status()
+    assert status["state"] == "not_configured"
+    assert status["auto_delivery"] is False
