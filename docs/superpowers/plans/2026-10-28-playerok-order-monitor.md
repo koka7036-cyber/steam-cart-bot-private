@@ -43,7 +43,7 @@
 - Safe atomic JSON load/save helpers must not persist raw URLs or credentials.
 
 - [x] Write tests first and observe expected missing-module failure.
-- [ ] Implement the pure helpers to pass tests.
+- [x] Implement the pure helpers to pass tests.
 - [ ] Run full `pytest -q` and Python compile checks.
 
 ### Task 2: Optional read-only Playerok event adapter
@@ -93,3 +93,8 @@
 - [ ] Add all new runtime files to update and backup lists without changing core `requirements.txt`.
 - [ ] Add compile check for new Python modules and Windows syntax checks for the setup helper scripts.
 - [ ] Validate on GitHub Actions before opening the PR.
+
+
+## Live-validation boundary
+
+All automated checks are green, including installing the pinned optional SDK in a clean Python 3.12 runner, importing its client/listener, verifying that `PlayerokAccountListener.start()` is asynchronous, and simulating startup and open-order reconciliation without a network connection. A real Playerok account/token is intentionally not used in CI; the user must opt in through the local setup helper before the adapter can be authenticated on the target PC. Auto-delivery and marketplace mutations are not part of this release.
