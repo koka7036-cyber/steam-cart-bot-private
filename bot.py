@@ -54,7 +54,12 @@ def save_json(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    filename="bot_errors.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    encoding="utf-8"
+)
 
 # --- МОДУЛЬ 1: АВТОЗАПУСК WINDOWS ---
 def is_autostart_enabled():
@@ -971,13 +976,13 @@ def acquire_python_instance_mutex():
     create_mutex = kernel32.CreateMutexW
     create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
     create_mutex.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_bool
     ctypes.set_last_error(0)
     handle = create_mutex(None, True, "Local\\CardBotPythonTelegramPolling")
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error())
     if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
-        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-        kernel32.CloseHandle.restype = ctypes.c_bool
         kernel32.CloseHandle(handle)
         return None
     return handle
@@ -993,4 +998,7 @@ try:
     bot.infinity_polling()
 finally:
     import ctypes
-    ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(_instance_mutex)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_bool
+    kernel32.CloseHandle(_instance_mutex)
