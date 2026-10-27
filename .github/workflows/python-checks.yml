@@ -25,3 +25,23 @@ jobs:
         run: python -m compileall -q bot.py funpay_orders.py order_parser.py sales_analytics.py
       - name: Run regression tests
         run: python -m pytest -q
+
+  powershell-syntax:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Parse Windows deployment scripts
+        shell: pwsh
+        run: |
+          $files = @('update_bot.ps1', 'run_bot.ps1', 'backup_bot.ps1')
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error ($file + ': ' + $_.Message) }
+              exit 1
+            }
+            Write-Host ('Parsed ' + $file)
+          }
