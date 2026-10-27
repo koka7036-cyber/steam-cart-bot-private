@@ -255,7 +255,10 @@ def funpay_check_unread_chats():
 
             sig = f"{sender_name}:{msg_preview}"
 
-            if first_run:
+            # On first startup, establish a baseline for read chats only.
+            # Unread chats must still be processed; otherwise a paid order waiting
+            # during setup/reconfiguration is silently discarded.
+            if first_run and "unread" not in classes:
                 seen_msgs[node_id] = sig
                 changed = True
                 continue
@@ -359,7 +362,7 @@ def funpay_check_unread_chats():
             cfg["seen_msgs"] = seen_msgs
             save_json(FP_CONFIG_FILE, cfg)
     except Exception:
-        pass
+        logging.exception("Ошибка проверки непрочитанных чатов FunPay")
 
 def funpay_background_worker():
     last_ping_time = 0
@@ -907,15 +910,16 @@ def handle_all_messages(message):
             if m_node:
                 target_node = m_node.group(1)
         elif message.chat.id in active_reply_target and not text.startswith("SET") and "steamcommunity.com" not in text:
-            target_node = active_reply_target.pop(message.chat.id)
+            target_node = active_reply_target[message.chat.id]
 
         if target_node:
             bot.send_message(message.chat.id, f"⏳ Отправляю ответ в чат FunPay `#node{target_node}`...", parse_mode="Markdown")
             ok, res_msg = send_funpay_chat_message(target_node, text)
             if ok:
+                active_reply_target.pop(message.chat.id, None)
                 bot.send_message(message.chat.id, f"✅ **Ответ отправлен на FunPay!**\n💬 _{text}_", parse_mode="Markdown")
             else:
-                bot.send_message(message.chat.id, f"❌ Не удалось отправить: {res_msg}")
+                bot.send_message(message.chat.id, f"❌ Не удалось отправить: {res_msg}\nРежим ответа оставлен включенным; можно повторить сообщение или отправить /cancel.")
             return
 
     # 2. Поиск пин-кода, трейд-ссылки ИЛИ ошибочной ссылки на профиль
@@ -959,5 +963,34 @@ def handle_all_messages(message):
                 reply_markup=get_tradeurl_help_markup(),
                 parse_mode="Markdown"
             )
-threading.Thread(target=funpay_background_worker, daemon=True).start()
-bot.infinity_polling()
+def acquire_python_instance_mutex():
+    # This guard also covers direct "py bot.py" launches, outside start.bat.
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_mutex = kernel32.CreateMutexW
+    create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    create_mutex.restype = ctypes.c_void_p
+    ctypes.set_last_error(0)
+    handle = create_mutex(None, True, "Local\\CardBotPythonTelegramPolling")
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_bool
+        kernel32.CloseHandle(handle)
+        return None
+    return handle
+
+
+_instance_mutex = acquire_python_instance_mutex()
+if _instance_mutex is None:
+    logging.error("Повторный запуск пропущен: уже работает другой экземпляр Telegram-бота.")
+    raise SystemExit(23)
+
+try:
+    threading.Thread(target=funpay_background_worker, daemon=True).start()
+    bot.infinity_polling()
+finally:
+    import ctypes
+    ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(_instance_mutex)
