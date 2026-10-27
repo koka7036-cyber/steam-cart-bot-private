@@ -1054,7 +1054,11 @@ def show_funpay_dashboard(message):
 @bot.callback_query_handler(func=lambda call: call.data in {"fpdash_refresh", "fpdash_orders"})
 def funpay_dashboard_callback(call):
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
-    if not call.message or call.message.chat.id != db.get("admin_id"):
+    if (
+        not call.message
+        or call.message.chat.id != db.get("admin_id")
+        or call.from_user.id != db.get("admin_id")
+    ):
         bot.answer_callback_query(call.id, "Нет доступа.", show_alert=True)
         return
     if call.data == "fpdash_orders":
