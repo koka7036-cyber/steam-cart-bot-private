@@ -14,6 +14,7 @@ $files = @(
     'bot.py',
     'order_parser.py',
     'funpay_orders.py',
+    'sales_analytics.py',
     'funpay_orders.json',
     'start.bat',
     'update_bot.ps1',
