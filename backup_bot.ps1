@@ -13,6 +13,8 @@ if (Test-Path -LiteralPath $destination) {
 $files = @(
     'bot.py',
     'order_parser.py',
+    'funpay_orders.py',
+    'funpay_orders.json',
     'start.bat',
     'update_bot.ps1',
     'run_bot.ps1',
