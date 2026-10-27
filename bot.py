@@ -441,6 +441,11 @@ def funpay_check_unread_chats():
                     last_message_html = full_msgs[-1]
                     full_text = html.unescape(re.sub(r'<[^>]+>', '', last_message_html).strip())
                     detail_loaded = True
+                    if not full_text.strip() and re.search(
+                        r"chat-msg-(?:file|attachment)|data-type=['\"]attachment['\"]",
+                        last_message_html, re.IGNORECASE
+                    ):
+                        full_text = "Вложение в чате FunPay"
                 elif re.search(r"chat-msg-(?:file|attachment)|data-type=['\"]attachment['\"]", r_node.text, re.IGNORECASE):
                     # Attachment-only message: flag it for manual inspection without
                     # downloading the file or trusting its contents.
