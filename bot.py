@@ -329,14 +329,27 @@ def register_funpay_payment(node_id, buyer, text, sets_per_item, quantity):
 
 
 def record_funpay_buyer_input(node_id, has_trade_url, has_file):
-    """Record that data arrived without saving a Steam URL or downloaded file."""
+    """Record incoming data only when exactly one open order can be matched."""
     if not has_trade_url and not has_file:
-        return None
+        return None, "no_input"
     with funpay_orders_lock:
         data = load_funpay_orders()
         record = find_open_order_for_chat(data["orders"], node_id)
         if not record:
-            return None
+            candidates = [
+                item for item in data["orders"].values()
+                if isinstance(item, dict)
+                and str(item.get("node_id")) == str(node_id)
+                and item.get("status") in {"awaiting_input", "input_received", "reserved", "review"}
+            ]
+            if len(candidates) > 1:
+                return None, "ambiguous"
+            return None, "unmatched"
+
+        # Don't re-process duplicate input events or overwrite the original input.
+        if record.get("input_received_at") or record.get("status") == "input_received":
+            return record, "duplicate"
+
         input_kind = "chat_trade_url" if has_trade_url else "file_attachment"
         mark_input_received(record, input_kind)
         policy = get_funpay_delivery_policy()
@@ -351,7 +364,7 @@ def record_funpay_buyer_input(node_id, has_trade_url, has_file):
                 "Данные получены, но автоматическая выдача отключена защитой модерации."
             )
         save_json(FP_ORDERS_FILE, data)
-        return record
+        return record, "recorded"
 
 def funpay_check_unread_chats():
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
@@ -447,13 +460,28 @@ def funpay_check_unread_chats():
                     has_file = bool(re.search(
                         r"(?:chat-msg-(?:file|attachment)|attachment|download)", last_message_html, re.IGNORECASE
                     ))
-                    input_record = record_funpay_buyer_input(node_id, has_trade_url, has_file)
-                    if input_record:
+                    input_record, input_result = record_funpay_buyer_input(node_id, has_trade_url, has_file)
+                    if input_record and input_result == "recorded":
                         mode = "ссылка в чате" if has_trade_url else "файл в чате"
                         bot.send_message(
                             admin_id,
                             f"📥 По заказу {input_record['key']} получены данные: {mode}.\n"
                             f"Статус: {input_record['status']}. Автоматическая отправка карточек не выполнялась."
+                        )
+                        continue
+                    if input_result == "duplicate":
+                        # Same chat/input was already recorded; don't overwrite state or send duplicate alert.
+                        continue
+                    if input_result in {"ambiguous", "unmatched"} and (has_trade_url or has_file):
+                        issue = (
+                            "найдено несколько открытых заказов"
+                            if input_result == "ambiguous"
+                            else "не найден подходящий открытый заказ"
+                        )
+                        bot.send_message(
+                            admin_id,
+                            f"⚠️ В чате FunPay #node{node_id} получены данные, но {issue}. "
+                            "Автоматически привязать файл/ссылку нельзя. Нужна ручная проверка."
                         )
                         continue
                     markup = types.InlineKeyboardMarkup()
@@ -790,6 +818,7 @@ def build_admin_keyboard():
     markup.add("🔵 Коды Playerok (1 сет)", "🔵 Коды Playerok (5 сетов)")
     auto_label = "⚙️ Автозапуск Windows: ВКЛ 🟢" if is_autostart_enabled() else "⚙️ Автозапуск Windows: ВЫКЛ 🔴"
     markup.add("🟢 Статус FunPay 24/7", auto_label)
+    markup.add("📋 Панель FunPay — сводка")
     return markup
 
 def build_customer_keyboard():
@@ -962,16 +991,119 @@ def set_fp_key(message):
     else:
         bot.send_message(message.chat.id, f"❌ Ошибка: {msg}")
 
+def build_funpay_dashboard_text():
+    """Build a read-only owner dashboard; never triggers delivery or lot raising."""
+    policy = get_funpay_delivery_policy()
+    with funpay_orders_lock:
+        orders = list(load_funpay_orders()["orders"].values())
+
+    counts = {}
+    for order in orders:
+        status = str(order.get("status", "unknown"))
+        counts[status] = counts.get(status, 0) + 1
+
+    cache = load_json(CACHE_FILE, {})
+    available_sets, _ = count_available_sets(cache) if cache else (0, [])
+    reserved = sum(1 for order in orders if order.get("reservation"))
+    pending = sum(1 for order in orders if order.get("status") in {"awaiting_input", "input_received"})
+    review = counts.get("review", 0)
+    delivered = counts.get("delivered", 0)
+    cancelled = counts.get("cancelled", 0)
+    mode = policy.get("input_mode", "file")
+    mode_label = {"file": "📎 Файл", "chat": "💬 Чат", "both": "📎 Файл + 💬 Чат"}.get(mode, mode)
+
+    return (
+        "📊 <b>ПАНЕЛЬ FUNPAY</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"📡 Подключение: <b>{'🟢 онлайн' if fp_state.get('online') else '🔴 не подключён'}</b>\n"
+        f"🕒 Последний пинг: <code>{html.escape(str(fp_state.get('last_ping', 'Никогда')))}</code>\n"
+        f"📦 Доступно полных сетов в кэше: <b>{available_sets}</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🧾 Всего заказов в журнале: <b>{len(orders)}</b>\n"
+        f"⏳ Ожидают данные: <b>{pending}</b>\n"
+        f"📌 Зарезервировано заказов: <b>{reserved}</b>\n"
+        f"🛡 Требуют проверки: <b>{review}</b>\n"
+        f"✅ Отмечены выданными: <b>{delivered}</b>\n"
+        f"🚫 Отменены: <b>{cancelled}</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"📨 Приём ссылки: <b>{html.escape(mode_label)}</b>\n"
+        "🚦 Автовыдача покупателям: <b>ВЫКЛЮЧЕНА</b>\n"
+        "🔒 Защита модерации: <b>АКТИВНА</b>\n"
+        + (f"⚠️ Последняя ошибка: <code>{html.escape(str(fp_state.get('error'))[:250])}</code>\n" if fp_state.get("error") else "")
+        + "\n<i>Это информационная панель. Открытие не запускает выдачу и не меняет настройки.</i>"
+    )
+
+
+def build_funpay_dashboard_markup():
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("🔄 Обновить сводку", callback_data="fpdash_refresh"),
+        types.InlineKeyboardButton("📋 Последние заказы", callback_data="fpdash_orders"),
+    )
+    return markup
+
+
+@bot.message_handler(func=lambda m: m.text == "📋 Панель FunPay — сводка")
+def show_funpay_dashboard(message):
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    if message.chat.id != db.get("admin_id"):
+        return
+    bot.send_message(
+        message.chat.id,
+        build_funpay_dashboard_text(),
+        reply_markup=build_funpay_dashboard_markup(),
+        parse_mode="HTML",
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data in {"fpdash_refresh", "fpdash_orders"})
+def funpay_dashboard_callback(call):
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    if (
+        not call.message
+        or call.message.chat.id != db.get("admin_id")
+        or call.from_user.id != db.get("admin_id")
+    ):
+        bot.answer_callback_query(call.id, "Нет доступа.", show_alert=True)
+        return
+    if call.data == "fpdash_orders":
+        with funpay_orders_lock:
+            orders = list(load_funpay_orders()["orders"].values())
+        orders.sort(key=lambda item: item.get("updated_at", 0), reverse=True)
+        lines = ["📋 <b>ПОСЛЕДНИЕ ЗАКАЗЫ FUNPAY</b>"]
+        for item in orders[:10]:
+            number = html.escape(str(item.get("funpay_order_number") or item.get("key") or "без номера"))
+            status = html.escape(str(item.get("status", "unknown")))
+            kind = html.escape(str(item.get("input_kind") or "данные не получены"))
+            lines.append(
+                f"• <b>{number}</b> — {int(item.get('sets_total', 0) or 0)} сет. — {status}\n"
+                f"  Вход: {kind}"
+            )
+        text = "\n".join(lines) if len(lines) > 1 else "📋 Журнал заказов FunPay пока пуст."
+    else:
+        text = build_funpay_dashboard_text()
+    try:
+        bot.edit_message_text(
+            text, call.message.chat.id, call.message.message_id,
+            reply_markup=build_funpay_dashboard_markup(), parse_mode="HTML"
+        )
+    except Exception as exc:
+        if "message is not modified" not in str(exc).lower():
+            logging.exception("Не удалось обновить панель FunPay")
+    bot.answer_callback_query(call.id, "Сводка обновлена." if call.data == "fpdash_refresh" else "Журнал обновлён.")
+
+
 @bot.message_handler(func=lambda m: m.text == "🟢 Статус FunPay 24/7")
 def check_fp_status(message):
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
-    if message.chat.id != db["admin_id"]:
+    if message.chat.id != db.get("admin_id"):
         return
-    funpay_ping_and_raise(force_raise=True)
+    # Read the last known state only. Connectivity checks and scheduled lot raises
+    # are handled by the background worker, never by this read-only dashboard.
     status_icon = "🟢 ОНЛАЙН АКТИВЕН" if fp_state["online"] else "🔴 НЕ ПОДКЛЮЧЕН"
     auto_status = "ВКЛЮЧЕН 🟢" if is_autostart_enabled() else "ВЫКЛЮЧЕН 🔴"
     text = (
-        f"📡 **Статус системы FunPay Full-Auto:**\n\n"
+        f"📡 **Статус системы FunPay:**\n\n"
         f"• Статус: **{status_icon}** (ID: `{fp_state['user_id']}`)\n"
         f"• Последний пинг: `{fp_state['last_ping']}`\n"
         f"• Автоподнятие лотов: `{fp_state['last_raise']}`\n"
@@ -1085,6 +1217,12 @@ def gen_codes_formatted(message):
 def handle_all_messages(message):
     text = (message.text or "").strip()
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+
+    # The catch-all handler is registered before the dashboard-specific handler.
+    # Route the admin dashboard button here so it cannot be swallowed by this handler.
+    if text == "📋 Панель FunPay — сводка" and message.chat.id == db.get("admin_id"):
+        show_funpay_dashboard(message)
+        return
 
     # 1. Ответ админа в чат FunPay
     if message.chat.id == db.get("admin_id"):

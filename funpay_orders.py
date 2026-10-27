@@ -55,8 +55,8 @@ def register_payment(orders: dict, *, node_id: str, buyer: str, text: str,
         "reservation": None,
         "input_kind": None,
         "input_received_at": None,
-        "created_at": now,
         "updated_at": now,
+        "created_at": now,
         "notes": [],
     }
     orders[key] = record
@@ -64,18 +64,27 @@ def register_payment(orders: dict, *, node_id: str, buyer: str, text: str,
 
 
 def find_open_order_for_chat(orders: dict, node_id: str) -> dict | None:
-    """Find the newest undelivered order in this FunPay chat."""
+    """Return an order only when exactly one candidate exists in this chat.
+
+    If multiple open orders exist, an incoming file/link cannot be reliably
+    assigned to one of them from the chat id alone. Returning ``None`` forces
+    manual review instead of silently attaching the input to the wrong order.
+    """
     candidates = [
         item for item in orders.values()
         if isinstance(item, dict)
         and str(item.get("node_id")) == str(node_id)
         and item.get("status") in OPEN_STATUSES
     ]
-    return max(candidates, key=lambda item: item.get("updated_at", 0), default=None)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def mark_input_received(record: dict, input_kind: str) -> None:
     """Mark that input arrived without storing its sensitive contents."""
+    # Repeated events must not overwrite the first input or move an order
+    # backwards from review/delivered/cancelled to input_received.
+    if record.get("status") not in {"awaiting_input", "reserved"}:
+        return
     record["input_kind"] = input_kind
     record["input_received_at"] = int(time.time())
     record["updated_at"] = int(time.time())
