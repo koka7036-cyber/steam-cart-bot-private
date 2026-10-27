@@ -1,0 +1,3 @@
+# Optional, unofficial Playerok read-only event monitor.
+# Installed only by configure_playerok.ps1 after the seller explicitly confirms the risk.
+PyPlayerokAPI==1.1.5
