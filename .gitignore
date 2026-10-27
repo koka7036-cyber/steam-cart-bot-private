@@ -6,6 +6,7 @@ vouchers.json
 inventory_cache.json
 steam_session.json
 funpay_config*.json
+funpay_orders.json
 *.log
 logs/
 __pycache__/

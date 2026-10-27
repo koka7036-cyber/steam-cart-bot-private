@@ -31,6 +31,7 @@ DB_FILE = "vouchers.json"
 CACHE_FILE = "inventory_cache.json"
 SESSION_FILE = "steam_session.json"
 FP_CONFIG_FILE = "funpay_config.json"
+FP_ORDERS_FILE = "funpay_orders.json"
 
 if not TG_TOKEN:
     raise RuntimeError("Установи переменную окружения TG_TOKEN перед запуском бота.")
@@ -114,6 +115,7 @@ fp_state = {
 active_reply_target = {}
 pending_customer_codes = {}
 delivery_lock = threading.Lock()
+funpay_orders_lock = threading.Lock()
 
 def get_fp_session():
     cfg = load_json(FP_CONFIG_FILE, {"golden_key": ""})
@@ -193,6 +195,11 @@ def funpay_ping_and_raise(force_raise=False):
         return False, fp_state["error"]
 
 def send_funpay_chat_message(node_id, text):
+    # The account has received a moderation warning. This integration can only
+    # send ordinary support text: it must never become a channel for directing
+    # a buyer to an external site, messenger, or delivery flow.
+    if re.search(r"(?:https?://|www\.|t\.me|telegram|discord|steamcommunity)", text or "", re.IGNORECASE):
+        return False, "Отправка ссылок во внешний сервис через FunPay заблокирована защитой модерации."
     s, cfg, err = get_fp_session()
     if err:
         return False, err
@@ -238,6 +245,95 @@ def send_funpay_chat_message(node_id, text):
         return False, f"Ошибка отправки: {e}"
 
 from order_parser import detect_order_sets_and_quantity
+from funpay_orders import find_open_order_for_chat, mark_input_received, register_payment
+
+
+def load_funpay_orders():
+    data = load_json(FP_ORDERS_FILE, {"orders": {}})
+    if not isinstance(data, dict):
+        data = {"orders": {}}
+    if not isinstance(data.get("orders"), dict):
+        data["orders"] = {}
+    return data
+
+
+def restore_reservation_to_cache(reservation):
+    """Put only a cancelled reservation back into the local inventory cache."""
+    locations = reservation.get("asset_locations", []) if isinstance(reservation, dict) else []
+    if not locations:
+        return False
+    cache = load_json(CACHE_FILE, {})
+    games = cache.get("games", {})
+    for item in locations:
+        game = item.get("game")
+        card = item.get("card")
+        asset_id = str(item.get("asset_id", ""))
+        if not game or not card or not asset_id:
+            continue
+        game_cards = games.setdefault(game, {})
+        card_assets = game_cards.setdefault(card, [])
+        if asset_id not in card_assets:
+            card_assets.append(asset_id)
+    save_json(CACHE_FILE, cache)
+    return True
+
+
+def reserve_funpay_order(record):
+    """Reserve exact card asset IDs once, before a buyer can be processed."""
+    with delivery_lock:
+        if record.get("reservation"):
+            return True, "Резерв уже существует."
+        asset_ids, cache_bundle, err = pick_cards_for_sets(record["sets_total"])
+        if err:
+            record["status"] = "review"
+            record.setdefault("notes", []).append(f"Резерв не создан: {err}")
+            record["updated_at"] = int(time.time())
+            return False, err
+        updated_cache, picked_games_info, asset_locations = cache_bundle
+        record["reservation"] = {
+            "asset_ids": asset_ids,
+            "asset_locations": asset_locations,
+            "picked_games": picked_games_info,
+            "created_at": int(time.time()),
+        }
+        record["status"] = "reserved"
+        record["updated_at"] = int(time.time())
+        save_json(CACHE_FILE, updated_cache)
+        return True, "Карточки зарезервированы."
+
+
+def register_funpay_payment(node_id, buyer, text, sets_per_item, quantity):
+    """Create an idempotent order record and reserve stock exactly once."""
+    with funpay_orders_lock:
+        data = load_funpay_orders()
+        record, created = register_payment(
+            data["orders"], node_id=str(node_id), buyer=buyer, text=text,
+            sets_per_item=sets_per_item, quantity=quantity,
+        )
+        if created:
+            reserve_funpay_order(record)
+            save_json(FP_ORDERS_FILE, data)
+        return record, created
+
+
+def record_funpay_buyer_input(node_id, has_trade_url, has_file):
+    """Record that data arrived without saving a Steam URL or downloaded file."""
+    if not has_trade_url and not has_file:
+        return None
+    with funpay_orders_lock:
+        data = load_funpay_orders()
+        record = find_open_order_for_chat(data["orders"], node_id)
+        if not record:
+            return None
+        input_kind = "chat_trade_url" if has_trade_url else "file_attachment"
+        mark_input_received(record, input_kind)
+        if input_kind == "chat_trade_url":
+            record["status"] = "review"
+            record.setdefault("notes", []).append(
+                "Трейд-ссылка обнаружена в чате, но автоматическая выдача отключена настройкой модерации."
+            )
+        save_json(FP_ORDERS_FILE, data)
+        return record
 
 def funpay_check_unread_chats():
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
@@ -288,11 +384,13 @@ def funpay_check_unread_chats():
                 changed = True
 
                 full_text = msg_preview
+                last_message_html = ""
                 try:
                     r_node = s.get(f"https://funpay.com/chat/?node={node_id}", timeout=10)
                     full_msgs = re.findall(r'<div class="chat-msg-text">([\s\S]*?)</div>', r_node.text)
                     if full_msgs:
-                        full_text = html.unescape(re.sub(r'<[^>]+>', '', full_msgs[-1]).strip())
+                        last_message_html = full_msgs[-1]
+                        full_text = html.unescape(re.sub(r'<[^>]+>', '', last_message_html).strip())
                 except Exception:
                     pass
 
@@ -307,16 +405,39 @@ def funpay_check_unread_chats():
                                         ("карт", "сет", "level", "уровень", "steam", "карточ"))
 
                 if is_order_payment and mentions_product and sets_per_item in (1, 5):
-                    bot.send_message(
-                        admin_id,
-                        f"⚠️ Оплачен заказ FunPay.\n"
-                        f"Покупатель: {sender_name}\n"
-                        f"Лот: {sets_per_item} сет. × {order_quantity} шт.\n"
-                        f"Автоматическая выдача приостановлена после предупреждения модерации. "
-                        f"Передайте товар только способом, подтвержденным FunPay. "
-                        f"Покупателю не отправлялись коды, ссылки или контакты сторонних сервисов."
+                    record, created = register_funpay_payment(
+                        node_id, sender_name, full_text, sets_per_item, order_quantity
                     )
+                    if created:
+                        order_no = record.get("funpay_order_number") or "не найден в тексте"
+                        bot.send_message(
+                            admin_id,
+                            f"⚠️ Оплачен заказ FunPay.\n"
+                            f"Заказ: {order_no}\n"
+                            f"Покупатель: {sender_name}\n"
+                            f"Лот: {sets_per_item} сет. × {order_quantity} шт.\n"
+                            f"Резерв: {record.get('status')}.\n"
+                            f"Автовыдача в FunPay отключена. Покупателю ничего не отправлялось."
+                        )
                 else:
+                    has_trade_url = bool(re.search(
+                        r"https?://steamcommunity\.com/tradeoffer/new/\?[^\s<]+", full_text, re.IGNORECASE
+                    ))
+                    # A file marker is intentionally only a hint. The current
+                    # HTML watcher does not download attachments or trust their
+                    # contents; an administrator must inspect a file manually.
+                    has_file = bool(re.search(
+                        r"(?:chat-msg-(?:file|attachment)|attachment|download)", last_message_html, re.IGNORECASE
+                    ))
+                    input_record = record_funpay_buyer_input(node_id, has_trade_url, has_file)
+                    if input_record:
+                        mode = "ссылка в чате" if has_trade_url else "файл в чате"
+                        bot.send_message(
+                            admin_id,
+                            f"📥 По заказу {input_record['key']} получены данные: {mode}.\n"
+                            f"Статус: {input_record['status']}. Автоматическая отправка карточек не выполнялась."
+                        )
+                        continue
                     markup = types.InlineKeyboardMarkup()
                     markup.add(types.InlineKeyboardButton("✍️ Ответить покупателю", callback_data=f"fpreply_{node_id}"))
                     bot.send_message(
@@ -504,6 +625,7 @@ def pick_cards_for_sets(sets_needed):
         return None, None, "Кэш пуст! Нажми «🔄 Обновить кэш склада»."
 
     selected_assets = []
+    asset_locations = []
     picked_games_info = []
     for game_name, cards_dict in sorted(games.items(), key=lambda x: len(x[1])):
         unique_count = len(cards_dict)
@@ -514,7 +636,13 @@ def pick_cards_for_sets(sets_needed):
         if take_sets > 0:
             for _ in range(take_sets):
                 for card_name in cards_dict:
-                    selected_assets.append(cards_dict[card_name].pop(0))
+                    asset_id = cards_dict[card_name].pop(0)
+                    selected_assets.append(asset_id)
+                    asset_locations.append({
+                        "game": game_name,
+                        "card": card_name,
+                        "asset_id": str(asset_id),
+                    })
             picked_games_info.append(f"{game_name} ({take_sets} сет. по {unique_count} карт)")
             sets_needed -= take_sets
         if sets_needed <= 0:
@@ -522,7 +650,7 @@ def pick_cards_for_sets(sets_needed):
 
     if sets_needed > 0:
         return None, None, "На складе временно закончились полные сеты."
-    return selected_assets, (cache_data, picked_games_info), None
+    return selected_assets, (cache_data, picked_games_info, asset_locations), None
 
 def send_trade_offer(trade_url, asset_ids, code):
     parsed = urllib.parse.urlparse(trade_url)
@@ -597,7 +725,7 @@ def _execute_delivery_locked(chat_id, code, trade_url, db):
         bot.send_message(chat_id, f"❌ {err}")
         return
 
-    updated_cache, picked_games_info = cache_bundle
+    updated_cache, picked_games_info, _asset_locations = cache_bundle
     ok, result_msg = send_trade_offer(trade_url, selected_assets, code)
 
     if not ok:
@@ -703,6 +831,57 @@ def reset_voucher_cmd(message):
     else:
         bot.send_message(message.chat.id, f"❌ Код `{code}` не найден в базе.", parse_mode="Markdown")
 
+
+@bot.message_handler(commands=["fporders"])
+def funpay_orders_cmd(message):
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    if message.chat.id != db.get("admin_id"):
+        return
+    with funpay_orders_lock:
+        orders = list(load_funpay_orders()["orders"].values())
+    if not orders:
+        bot.send_message(message.chat.id, "📋 Журнал FunPay пока пуст.")
+        return
+    orders.sort(key=lambda item: item.get("updated_at", 0), reverse=True)
+    lines = ["📋 **Последние заказы FunPay**"]
+    for item in orders[:10]:
+        number = item.get("funpay_order_number") or item.get("key")
+        lines.append(
+            f"• `{number}` — {item.get('sets_total')} сет., "
+            f"{item.get('status')}, данные: {item.get('input_kind') or 'нет'}\n"
+            f"  ключ: `{item.get('key')}`"
+        )
+    bot.send_message(message.chat.id, "\n".join(lines), parse_mode="Markdown")
+
+
+@bot.message_handler(commands=["fprelease"])
+def funpay_release_cmd(message):
+    """Release an undelivered reservation by its journal key, with an audit note."""
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    if message.chat.id != db.get("admin_id"):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) != 2:
+        bot.send_message(message.chat.id, "Использование: `/fprelease КЛЮЧ_ИЗ_fporders`", parse_mode="Markdown")
+        return
+    key = parts[1].strip()
+    with funpay_orders_lock:
+        data = load_funpay_orders()
+        record = data["orders"].get(key)
+        if not isinstance(record, dict):
+            bot.send_message(message.chat.id, "❌ Заказ не найден.")
+            return
+        if record.get("status") == "delivered":
+            bot.send_message(message.chat.id, "❌ Нельзя снять резерв с уже выданного заказа.")
+            return
+        restored = restore_reservation_to_cache(record.get("reservation"))
+        record["reservation"] = None
+        record["status"] = "cancelled"
+        record["updated_at"] = int(time.time())
+        record.setdefault("notes", []).append("Резерв снят администратором через /fprelease.")
+        save_json(FP_ORDERS_FILE, data)
+    bot.send_message(message.chat.id, "✅ Резерв снят." if restored else "✅ Заказ помечен отмененным; активного резерва не было.")
+
 @bot.message_handler(func=lambda m: m.text == "🔗 Где взять трейд-ссылку?")
 def customer_help_tradeurl(message):
     bot.send_message(
@@ -744,13 +923,21 @@ def set_fp_key(message):
         bot.send_message(message.chat.id, "⚠️ Напиши ключ через пробел: `/fp твой_golden_key`", parse_mode="Markdown")
         return
     key = parts[1].strip()
-    save_json(FP_CONFIG_FILE, {"golden_key": key, "last_raise_ts": 0})
+    config = load_json(FP_CONFIG_FILE, {})
+    config["golden_key"] = key
+    config["last_raise_ts"] = 0
+    # A direct chat URL is deliberately disabled unless FunPay explicitly
+    # confirms it for this account and product category.
+    config.setdefault("delivery_input_mode", "file")
+    config.setdefault("allow_chat_trade_url", False)
+    save_json(FP_CONFIG_FILE, config)
     bot.send_message(message.chat.id, "⏳ Проверяю ключ `golden_key` на FunPay...", parse_mode="Markdown")
     ok, msg = funpay_ping_and_raise(force_raise=True)
     if ok:
         bot.send_message(
             message.chat.id,
-            f"✅ **FunPay Full-Auto подключен!** (ID: `{fp_state['user_id']}`)",
+            f"✅ **FunPay подключен.** (ID: `{fp_state['user_id']}`)\n"
+            "Выдача и внешние ссылки в чат отключены защитой модерации.",
             reply_markup=build_admin_keyboard(),
             parse_mode="Markdown"
         )
