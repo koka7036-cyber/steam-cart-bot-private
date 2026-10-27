@@ -102,3 +102,17 @@ def test_different_explicit_order_numbers_do_not_collapse():
     assert created_first and created_second
     assert first is not second
     assert len(orders) == 2
+
+
+def test_message_signature_is_stable_and_does_not_expose_preview():
+    from funpay_orders import message_signature
+    preview = "https://steamcommunity.com/tradeoffer/new/?partner=123&token=secret"
+    first = message_signature("Buyer", preview)
+    assert first == message_signature("Buyer", preview)
+    assert preview not in first
+    assert "secret" not in first
+
+
+def test_message_signature_changes_when_preview_changes():
+    from funpay_orders import message_signature
+    assert message_signature("Buyer", "payment") != message_signature("Buyer", "file attached")
