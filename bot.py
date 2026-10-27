@@ -959,3 +959,5 @@ def handle_all_messages(message):
                 reply_markup=get_tradeurl_help_markup(),
                 parse_mode="Markdown"
             )
+threading.Thread(target=funpay_background_worker, daemon=True).start()
+bot.infinity_polling()
