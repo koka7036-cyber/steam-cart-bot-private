@@ -1,5 +1,5 @@
 """Regression tests for safe FunPay order matching."""
-from funpay_orders import find_open_order_for_chat, mark_input_received
+from funpay_orders import find_open_order_for_chat, mark_input_received, register_payment
 
 
 def make_order(key, node_id="123", status="awaiting_input", updated_at=1):
@@ -69,3 +69,36 @@ def test_review_order_is_not_overwritten_by_late_input():
     mark_input_received(order, "chat_trade_url")
     assert order["status"] == "review"
     assert order["input_kind"] is None
+
+
+
+def test_payment_registration_is_idempotent_for_order_number():
+    orders = {}
+    first, created_first = register_payment(
+        orders, node_id="123", buyer="Buyer", text="Заказ #123456 оплачен",
+        sets_per_item=5, quantity=2,
+    )
+    second, created_second = register_payment(
+        orders, node_id="123", buyer="Buyer", text="Заказ #123456 оплачен повторно",
+        sets_per_item=5, quantity=2,
+    )
+    assert created_first is True
+    assert created_second is False
+    assert first is second
+    assert first["sets_total"] == 10
+    assert len(orders) == 1
+
+
+def test_different_explicit_order_numbers_do_not_collapse():
+    orders = {}
+    first, created_first = register_payment(
+        orders, node_id="123", buyer="Buyer", text="Заказ #123456 оплачен",
+        sets_per_item=1, quantity=1,
+    )
+    second, created_second = register_payment(
+        orders, node_id="123", buyer="Buyer", text="Заказ #123457 оплачен",
+        sets_per_item=1, quantity=1,
+    )
+    assert created_first and created_second
+    assert first is not second
+    assert len(orders) == 2
