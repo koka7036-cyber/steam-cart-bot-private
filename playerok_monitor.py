@@ -70,6 +70,9 @@ class PlayerokMonitor:
             "state": "not_configured" if not self._token else "stopped",
             "username": None,
             "last_event_at": None,
+            "last_sync_at": None,
+            "last_sync_count": 0,
+            "last_sync_error": None,
             "last_error": None,
         }
 
@@ -125,6 +128,65 @@ class PlayerokMonitor:
             self._set_status("error", error=type(exc).__name__)
             logging.error("Playerok monitor stopped (%s)", type(exc).__name__)
 
+    async def _sync_open_deals(self, account: Any) -> tuple[int, str | None]:
+        """Reconcile existing paid/pending seller deals without marketplace writes."""
+        try:
+            from PyPlayerokAPI.types.enums import ItemDealDirections, ItemDealStatuses
+        except ImportError:
+            return 0, "DealStatusTypesUnavailable"
+
+        seen_ids = set()
+        scanned = 0
+        cursor = None
+        try:
+            # The SDK limits each page to 24. Cap reconciliation to five pages so
+            # a very old account cannot trigger a large scan during bot startup.
+            for _ in range(5):
+                page = await account.get_deals(
+                    count=24,
+                    statuses=[ItemDealStatuses.PAID, ItemDealStatuses.PENDING],
+                    direction=ItemDealDirections.OUT,
+                    after_cursor=cursor,
+                )
+                deals = _get(page, "deals") or []
+                for deal in deals:
+                    deal_id = _get(deal, "id")
+                    if not deal_id or str(deal_id) in seen_ids:
+                        continue
+                    seen_ids.add(str(deal_id))
+                    item = _get(deal, "item")
+                    chat = _get(deal, "chat")
+                    item_id = _get(item, "id")
+                    item_name = _safe_label(_get(item, "name") or _get(item, "title"))
+                    chat_id = _get(chat, "id")
+                    payload = {
+                        "event_type": "INITIAL_SYNC",
+                        "deal_id": str(deal_id),
+                        "status": normalize_platform_status(_get(deal, "status")),
+                        "item_id": str(item_id) if item_id else None,
+                        "item_name": item_name,
+                        "chat_id": str(chat_id) if chat_id else None,
+                        "sets": map_item_to_sets(item_id, self.one_set_item_id, self.five_set_item_id),
+                        "has_trade_url": False,
+                        "is_initial_sync": True,
+                        "seen_at": int(time.time()),
+                    }
+                    # The callback stores only safe fields and deduplicates by deal ID.
+                    await asyncio.to_thread(self._on_event, payload)
+                    scanned += 1
+
+                page_info = _get(page, "page_info", "pageInfo")
+                if not _get(page_info, "has_next_page", "hasNextPage"):
+                    break
+                next_cursor = _get(page_info, "end_cursor", "endCursor")
+                if not next_cursor or next_cursor == cursor:
+                    break
+                cursor = next_cursor
+            return scanned, None
+        except Exception as exc:
+            # Keep streaming events even if the initial reconciliation endpoint fails.
+            return scanned, type(exc).__name__
+
     async def _run(self) -> None:
         try:
             from PyPlayerokAPI.account import AccountClient
@@ -140,6 +202,15 @@ class PlayerokMonitor:
         account_id = _get(profile, "id")
         if not username:
             raise RuntimeError("Playerok account profile unavailable")
+
+        try:
+            sync_count, sync_error = await self._sync_open_deals(account)
+        except Exception as exc:
+            sync_count, sync_error = 0, type(exc).__name__
+        with self._lock:
+            self._state["last_sync_at"] = int(time.time())
+            self._state["last_sync_count"] = sync_count
+            self._state["last_sync_error"] = sync_error
 
         listener = PlayerokAccountListener(account)
         # SDK 1.1.5 exposes its router as _router (some releases/documentation
