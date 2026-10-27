@@ -472,10 +472,15 @@ def funpay_check_unread_chats():
                     if input_result == "duplicate":
                         # Same chat/input was already recorded; don't overwrite state or send duplicate alert.
                         continue
-                    if input_result == "ambiguous":
+                    if input_result in {"ambiguous", "unmatched"} and (has_trade_url or has_file):
+                        issue = (
+                            "найдено несколько открытых заказов"
+                            if input_result == "ambiguous"
+                            else "не найден подходящий открытый заказ"
+                        )
                         bot.send_message(
                             admin_id,
-                            f"⚠️ В чате FunPay #node{node_id} получены данные, но найдено несколько открытых заказов. "
+                            f"⚠️ В чате FunPay #node{node_id} получены данные, но {issue}. "
                             "Автоматически привязать файл/ссылку нельзя. Нужна ручная проверка."
                         )
                         continue
