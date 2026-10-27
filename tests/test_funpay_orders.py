@@ -61,3 +61,11 @@ def test_delivered_order_cannot_be_moved_back_by_late_input():
     mark_input_received(order, "file_attachment")
     assert order["status"] == "delivered"
     assert order["input_kind"] is None
+
+
+
+def test_review_order_is_not_overwritten_by_late_input():
+    order = make_order("review", status="review")
+    mark_input_received(order, "chat_trade_url")
+    assert order["status"] == "review"
+    assert order["input_kind"] is None
