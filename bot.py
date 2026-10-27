@@ -1096,18 +1096,18 @@ def funpay_dashboard_callback(call):
 @bot.message_handler(func=lambda m: m.text == "🟢 Статус FunPay 24/7")
 def check_fp_status(message):
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
-    if message.chat.id != db["admin_id"]:
+    if message.chat.id != db.get("admin_id"):
         return
-    # Status view must not force a lot raise; the background worker manages scheduled raises.
-    funpay_ping_and_raise(force_raise=False)
+    # Read the last known state only. Connectivity checks and scheduled lot raises
+    # are handled by the background worker, never by this read-only dashboard.
     status_icon = "🟢 ОНЛАЙН АКТИВЕН" if fp_state["online"] else "🔴 НЕ ПОДКЛЮЧЕН"
     auto_status = "ВКЛЮЧЕН 🟢" if is_autostart_enabled() else "ВЫКЛЮЧЕН 🔴"
     text = (
-        f"📡 **Статус системы FunPay Full-Auto:**\n\n"
-        f"• Статус: **{status_icon}** (ID: `{fp_state['user_id']}`)\n"
-        f"• Последний пинг: `{fp_state['last_ping']}`\n"
-        f"• Автоподнятие лотов: `{fp_state['last_raise']}`\n"
-        f"• Автовыдача FunPay: **Приостановлена до подтверждения разрешенного способа передачи**\n"
+        f"📡 **Статус системы FunPay:**\\n\\n"
+        f"• Статус: **{status_icon}** (ID: `{fp_state['user_id']}`)\\n"
+        f"• Последний пинг: `{fp_state['last_ping']}`\\n"
+        f"• Автоподнятие лотов: `{fp_state['last_raise']}`\\n"
+        f"• Автовыдача FunPay: **Приостановлена до подтверждения разрешенного способа передачи**\\n"
         f"• Автозапуск Windows: **{auto_status}**"
     )
     bot.send_message(message.chat.id, text, reply_markup=build_admin_keyboard(), parse_mode="Markdown")
