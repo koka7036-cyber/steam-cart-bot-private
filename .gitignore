@@ -17,3 +17,16 @@ env/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local deployment state and backups — never commit
+auto_update_commit.txt
+requirements.installed.txt
+резервные/
+update_backups/
+*.bak
+*.tmp
+
+# Local third-party ASF files and archives
+ASF-win-x64*/
+*.rar
+*.zip
