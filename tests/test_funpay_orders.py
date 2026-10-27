@@ -45,3 +45,19 @@ def test_input_received_updates_status_and_input_kind():
     assert order["status"] == "input_received"
     assert order["input_kind"] == "file_attachment"
     assert isinstance(order["input_received_at"], int)
+
+
+def test_repeated_input_does_not_overwrite_first_input():
+    order = make_order("only")
+    mark_input_received(order, "file_attachment")
+    first_received_at = order["input_received_at"]
+    mark_input_received(order, "chat_trade_url")
+    assert order["input_kind"] == "file_attachment"
+    assert order["input_received_at"] == first_received_at
+
+
+def test_delivered_order_cannot_be_moved_back_by_late_input():
+    order = make_order("done", status="delivered")
+    mark_input_received(order, "file_attachment")
+    assert order["status"] == "delivered"
+    assert order["input_kind"] is None
