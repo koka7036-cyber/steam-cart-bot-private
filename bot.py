@@ -514,14 +514,14 @@ def funpay_check_unread_chats():
                     markup = types.InlineKeyboardMarkup()
                     markup.add(types.InlineKeyboardButton("✍️ Ответить покупателю", callback_data=f"fpreply_{node_id}"))
                     safe_text = re.sub(
-                        r"https?://steamcommunity\\.com/tradeoffer/new/\\?[^\\s<]+",
+                        r"https?://steamcommunity\.com/tradeoffer/new/\?[^\s<]+",
                         "[трейд-ссылка скрыта]", full_text, flags=re.IGNORECASE
                     )
                     bot.send_message(
                         admin_id,
-                        f"💬 Новое сообщение на FunPay\\n"
-                        f"От: {sender_name} (чат #node{node_id})\\n\\n"
-                        f"Сообщение: {safe_text}\\n\\n"
+                        f"💬 Новое сообщение на FunPay\n"
+                        f"От: {sender_name} (чат #node{node_id})\n\n"
+                        f"Сообщение: {safe_text}\n\n"
                         "Нажми Reply на это сообщение или кнопку ниже.",
                         reply_markup=markup
                     )
@@ -835,16 +835,16 @@ def _execute_delivery_locked(chat_id, code, trade_url, db):
         rem_sets, _ = count_available_sets(updated_cache)
         stock_warning = ""
         if rem_sets < 5:
-            stock_warning = "\\n🚨 **Критический остаток:** меньше 5 полных сетов. Обнови склад и проверь запас."
+            stock_warning = "\n🚨 **Критический остаток:** меньше 5 полных сетов. Обнови склад и проверь запас."
         elif rem_sets < 10:
-            stock_warning = "\\n⚠️ **Низкий остаток:** меньше 10 полных сетов. Проверь запас."
+            stock_warning = "\n⚠️ **Низкий остаток:** меньше 10 полных сетов. Проверь запас."
         bot.send_message(
             db["admin_id"],
-            f"💰 **Успешная автовыдача ({platform_tag})!**\\n"
-            f"• Код: `{code}`\\n"
-            f"• Получатель: `{trade_url}`\\n"
-            f"• Отправлено: {games_str}\\n"
-            f"• Остаток в кэше: **{rem_sets} полных сетов**" + stock_warning,
+            f"💰 **Успешная автовыдача ({platform_tag})!**\n"
+            f"Код: {code}\n"
+            "Получатель: [трейд-ссылка скрыта]\n"
+            f"Отправлено: {games_str}\n"
+            f"Остаток в кэше: **{rem_sets} полных сетов**" + stock_warning,
             parse_mode="Markdown"
         )
 
