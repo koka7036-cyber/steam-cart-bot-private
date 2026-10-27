@@ -307,60 +307,15 @@ def funpay_check_unread_chats():
                                         ("карт", "сет", "level", "уровень", "steam", "карточ"))
 
                 if is_order_payment and mentions_product and sets_per_item in (1, 5):
-                    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
-                    vouchers = db.get("vouchers", {})
-                    # Подбираем сразу все коды для количества экземпляров заказа.
-                    available_codes = [
-                        code for code, vdata in vouchers.items()
-                        if vdata.get("platform", "funpay") == "funpay"
-                        and vdata.get("sets") == sets_per_item
-                        and not vdata.get("used") and not vdata.get("sent_to_fp")
-                    ][:order_quantity]
-
-                    if len(available_codes) == order_quantity:
-                        lines = []
-                        for code in available_codes:
-                            lines.append(f"Пин-код ({sets_per_item} сет.): {code}")
-                        codes_text = "\n".join(lines)
-                        auto_reply_text = (
-                            f"🤖 Автоматическая выдача 24/7!\n"
-                            f"Заказ: {order_quantity} шт. × {sets_per_item} сет.\n"
-                            f"{codes_text}\n\n"
-                            f"👉 Для получения карточек отправьте каждый пин-код и вашу ТРЕЙД-ССЫЛКУ "
-                            f"(не ссылку на профиль!) нашему боту в Telegram: @{BOT_USERNAME}"
-                        )
-                        ok_reply, reply_err = send_funpay_chat_message(node_id, auto_reply_text)
-                        if ok_reply:
-                            # Сохраняем резервирование только после подтвержденной отправки.
-                            latest_db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
-                            for code in available_codes:
-                                if code in latest_db.get("vouchers", {}):
-                                    latest_db["vouchers"][code]["sent_to_fp"] = True
-                            save_json(DB_FILE, latest_db)
-                            bot.send_message(
-                                admin_id,
-                                f"⚡️ Автовыдача на FunPay сработала!\n"
-                                f"Покупатель: {sender_name}\n"
-                                f"Лот: {sets_per_item} сет. × {order_quantity} шт.\n"
-                                f"Выдано кодов: {len(available_codes)}"
-                            )
-                        else:
-                            bot.send_message(
-                                admin_id,
-                                f"❌ Не удалось отправить коды на FunPay.\n"
-                                f"Покупатель: {sender_name}\n"
-                                f"Заказ: {order_quantity} × {sets_per_item} сет.\n"
-                                f"Коды не помечены выданными. Ошибка: {reply_err}"
-                            )
-                    else:
-                        bot.send_message(
-                            admin_id,
-                            f"⚠️ Не хватает кодов FunPay!\n"
-                            f"Покупатель: {sender_name}\n"
-                            f"Лот: {sets_per_item} сет. × {order_quantity} шт.\n"
-                            f"Доступно кодов: {len(available_codes)} из {order_quantity}. "
-                            f"Автоответ не отправлен, чтобы не выдать заказ частично."
-                        )
+                    bot.send_message(
+                        admin_id,
+                        f"⚠️ Оплачен заказ FunPay.\n"
+                        f"Покупатель: {sender_name}\n"
+                        f"Лот: {sets_per_item} сет. × {order_quantity} шт.\n"
+                        f"Автоматическая выдача приостановлена после предупреждения модерации. "
+                        f"Передайте товар только способом, подтвержденным FunPay. "
+                        f"Покупателю не отправлялись коды, ссылки или контакты сторонних сервисов."
+                    )
                 else:
                     markup = types.InlineKeyboardMarkup()
                     markup.add(types.InlineKeyboardButton("✍️ Ответить покупателю", callback_data=f"fpreply_{node_id}"))
@@ -815,7 +770,7 @@ def check_fp_status(message):
         f"• Статус: **{status_icon}** (ID: `{fp_state['user_id']}`)\n"
         f"• Последний пинг: `{fp_state['last_ping']}`\n"
         f"• Автоподнятие лотов: `{fp_state['last_raise']}`\n"
-        f"• Автовыдача в чат FunPay: **Активна (только пул FunPay) 🚀**\n"
+        f"• Автовыдача FunPay: **Приостановлена до подтверждения разрешенного способа передачи**\n"
         f"• Автозапуск Windows: **{auto_status}**"
     )
     bot.send_message(message.chat.id, text, reply_markup=build_admin_keyboard(), parse_mode="Markdown")
