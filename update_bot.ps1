@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 $repo = 'C:\CardBot_repo'
 $live = 'C:\CardBot'
 $log = Join-Path $live 'auto_update.log'
@@ -15,36 +15,12 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $repo '.git'))) { throw 'Клон GitHub не найден.' }
     if (-not (Test-Path -LiteralPath (Join-Path $live 'bot.py'))) { throw 'Рабочий bot.py не найден.' }
 
-    foreach ($name in $deployFiles) {
-        if (-not (Test-Path -LiteralPath (Join-Path $repo $name))) { throw "В репозитории нет $name." }
-    }
-    if (-not (Test-Path -LiteralPath (Join-Path $repo 'requirements.txt'))) { throw 'В репозитории нет requirements.txt.' }
+    # Обновляем только remote-tracking ref. Локальные изменения в клоне не затрагиваем.
+    $null = & git -C $repo fetch --quiet origin '+refs/heads/main:refs/remotes/origin/main' 2>&1
+    if ($LASTEXITCODE -ne 0) { throw 'Не удалось получить обновления с GitHub. Рабочая версия оставлена без изменений.' }
 
-    $dirty = @(& git -C $repo status --porcelain 2>$null)
-    if ($LASTEXITCODE -ne 0) { throw 'Не удалось проверить клон GitHub.' }
-    if ($dirty.Count -gt 0) { throw 'В клоне есть локальные изменения; автоматическое обновление остановлено.' }
-
-    $null = & git -C $repo pull --ff-only --quiet 2>&1
-    $pullCode = $LASTEXITCODE
-    if ($pullCode -ne 0) { throw 'Не удалось получить код с GitHub. Рабочая версия оставлена без изменений.' }
-
-    $commit = (& git -C $repo rev-parse HEAD 2>$null).Trim()
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) { throw 'Не удалось определить версию GitHub.' }
-
-    foreach ($name in $deployFiles) {
-        if (-not (Test-Path -LiteralPath (Join-Path $repo $name))) { throw "После обновления отсутствует $name." }
-    }
-
-    $newRequirements = [System.IO.File]::ReadAllText((Join-Path $repo 'requirements.txt'))
-    if (Test-Path -LiteralPath $requirementsSnapshot) {
-        $installedRequirements = [System.IO.File]::ReadAllText($requirementsSnapshot)
-        if ($newRequirements -ne $installedRequirements) {
-            throw 'Список библиотек изменился. Код не обновлялся; требуется отдельное обновление библиотек.'
-        }
-    } else {
-        $utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false
-        [System.IO.File]::WriteAllText($requirementsSnapshot, $newRequirements, $utf8)
-    }
+    $commit = (& git -C $repo rev-parse 'origin/main^{commit}' 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) { throw 'Не удалось определить актуальную версию origin/main.' }
 
     $deployedCommit = ''
     if (Test-Path -LiteralPath $marker) {
@@ -55,7 +31,36 @@ try {
         exit 0
     }
 
-    $botText = [System.IO.File]::ReadAllText((Join-Path $repo 'bot.py'))
+    # Архивируем файлы именно из удалённого коммита, а не из локальной рабочей папки.
+    $sourceRoot = Join-Path $env:TEMP ('CardBotSource_' + [guid]::NewGuid().ToString('N'))
+    $archive = Join-Path $env:TEMP ('CardBotSource_' + [guid]::NewGuid().ToString('N') + '.zip')
+    $archivePaths = @($deployFiles) + @('requirements.txt')
+    $archiveArgs = @('-C', $repo, 'archive', '--format=zip', "--output=$archive", $commit) + $archivePaths
+    $null = & git @archiveArgs 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $archive)) {
+        throw 'Не удалось подготовить архив файлов GitHub. Рабочая версия оставлена без изменений.'
+    }
+    Expand-Archive -LiteralPath $archive -DestinationPath $sourceRoot -Force
+    Remove-Item -LiteralPath $archive -Force
+
+    foreach ($name in $archivePaths) {
+        if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot $name) -PathType Leaf)) {
+            throw "В удалённой версии отсутствует $name. Рабочая версия оставлена без изменений."
+        }
+    }
+
+    $newRequirements = [System.IO.File]::ReadAllText((Join-Path $sourceRoot 'requirements.txt'))
+    if (Test-Path -LiteralPath $requirementsSnapshot) {
+        $installedRequirements = [System.IO.File]::ReadAllText($requirementsSnapshot)
+        if ($newRequirements -ne $installedRequirements) {
+            throw 'Список библиотек изменился. Код не обновлялся; требуется отдельное обновление библиотек.'
+        }
+    } else {
+        $utf8 = New-Object System.Text.UTF8Encoding -ArgumentList $false
+        [System.IO.File]::WriteAllText($requirementsSnapshot, $newRequirements, $utf8)
+    }
+
+    $botText = [System.IO.File]::ReadAllText((Join-Path $sourceRoot 'bot.py'))
     if ($botText -notmatch '(?m)^\s*import\s+threading\b' -or
         $botText -notmatch '(?m)^\s*def\s+funpay_background_worker\s*\(' -or
         $botText -notmatch '(?m)^\s*bot\s*=\s*telebot\.TeleBot\s*\(') {
@@ -81,7 +86,7 @@ try {
     $utf8Bom = New-Object System.Text.UTF8Encoding -ArgumentList $true
 
     foreach ($name in $deployFiles) {
-        $source = Join-Path $repo $name
+        $source = Join-Path $sourceRoot $name
         $target = Join-Path $stage $name
         if ($name -eq 'bot.py') {
             [System.IO.File]::WriteAllText($target, $botText, $utf8)
