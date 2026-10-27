@@ -969,6 +969,18 @@ def build_playerok_dashboard_text(show_orders=False):
         lines.append("Последнее событие: <code>" + time.strftime("%d.%m.%Y %H:%M:%S", time.localtime(state["last_event_at"])) + "</code>")
     else:
         lines.append("Последнее событие: пока не получено")
+    if state.get("last_sync_at"):
+        lines.append(
+            "Последняя сверка открытых сделок: <code>"
+            + time.strftime("%d.%m.%Y %H:%M:%S", time.localtime(state["last_sync_at"]))
+            + f"</code> — просмотрено: <b>{int(state.get('last_sync_count') or 0)}</b>"
+        )
+    if state.get("last_sync_error"):
+        lines.append(
+            "⚠️ Ошибка первой сверки: <code>"
+            + html.escape(str(state["last_sync_error"]))
+            + "</code>. Поток событий продолжает работать."
+        )
     lines.append(f"Лот на 1 сет: {'✅ ID задан' if state.get('one_set_mapping_ready') else '⚠️ ID не задан'}")
     lines.append(f"Лот на 5 сетов: {'✅ ID задан' if state.get('five_set_mapping_ready') else '⚠️ ID не задан'}")
     if state.get("one_set_mapping_ready") and state.get("five_set_mapping_ready") and not state.get("mappings_distinct"):
@@ -989,7 +1001,7 @@ def build_playerok_dashboard_text(show_orders=False):
     if ledger_error:
         lines.append("⚠️ Не удалось прочитать журнал. Файл не перезаписывался.")
     if show_orders:
-        latest = sorted(orders.values(), key=lambda item: item.get("updated_at", 0), reverse=True)[:8]
+        latest = sorted(orders.values(), key=lambda item: item.get("updated_at") or 0, reverse=True)[:8]
         lines.extend(["", "<b>Последние сделки</b>"])
         for record in latest:
             item_name = html.escape(str(record.get("item_name") or "Лот не определён"))
@@ -1052,7 +1064,7 @@ def handle_playerok_event(event):
 
     if not admin_id:
         return
-    if created:
+    if created and not event.get("is_initial_sync"):
         sets_text = str(record.get("sets")) if record and record.get("sets") in (1, 5) else "не определено"
         item_name = html.escape(str(record.get("item_name") or "лот не сопоставлен")) if record else "лот не сопоставлен"
         review = " Требуется ручная проверка ID лота." if not record or record.get("sets") not in (1, 5) else ""
@@ -1089,7 +1101,12 @@ def handle_playerok_monitor_status(status):
     if not admin_id:
         return
     messages = {
-        "listening": "🟢 Playerok: аккаунт авторизован, слушатель событий запущен. Сделки только наблюдаются; автовыдача выключена.",
+        "listening": (
+            "🟢 Playerok: аккаунт авторизован, слушатель событий запущен. "
+            f"При запуске просмотрено открытых сделок: {int(status.get('last_sync_count') or 0)}. "
+            + (f"Сверка не завершилась: {status.get('last_sync_error')}. " if status.get("last_sync_error") else "")
+            + "Сделки только наблюдаются; автовыдача выключена."
+        ),
         "missing_dependency": "⚠️ Playerok: не установлена дополнительная библиотека. Запусти configure_playerok.bat только после прочтения предупреждения о неофициальном API.",
         "error": f"⚠️ Playerok: подключение остановилось ({html.escape(str(status.get('last_error') or 'неизвестная ошибка'))}). Проверь статус вручную; автоматических действий не выполнялось.",
     }
