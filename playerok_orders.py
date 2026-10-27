@@ -300,7 +300,7 @@ def _sanitize_record(record: Any, fallback_id: Any = None) -> dict | None:
         fulfillment_status = "unknown"
 
     sets = record.get("sets")
-    if sets not in {1, 5}:
+    if not (isinstance(sets, int) and not isinstance(sets, bool) and sets in (1, 5)):
         sets = None
 
     safe_record = {
