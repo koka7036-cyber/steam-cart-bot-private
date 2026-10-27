@@ -221,28 +221,24 @@ def test_problem_deal_is_not_used_for_automatic_chat_matching():
     assert summarize_orders(orders)["problem"] == 1
 
 
-def test_corrupted_untrusted_quantity_does_not_crash_ledger_sanitizer():
+def test_corrupted_untrusted_quantity_does_not_crash_ledger_sanitizer(tmp_path):
     from playerok_orders import save_orders, load_orders
 
-    target = __import__("pathlib").Path("playerok_test_corrupt_tmp.json")
-    try:
-        save_orders(
-            {
-                "orders": {
-                    "d-corrupt": {
-                        "deal_id": "d-corrupt",
-                        "platform_status": "PAID",
-                        "fulfillment_status": "needs_review",
-                        "sets": ["not", "a", "number"],
-                        "trade_url": "https://steamcommunity.com/tradeoffer/new/?token=secret",
-                    }
+    target = tmp_path / "playerok_test_corrupt_tmp.json"
+    save_orders(
+        {
+            "orders": {
+                "d-corrupt": {
+                    "deal_id": "d-corrupt",
+                    "platform_status": "PAID",
+                    "fulfillment_status": "needs_review",
+                    "sets": ["not", "a", "number"],
+                    "trade_url": "https://steamcommunity.com/tradeoffer/new/?token=secret",
                 }
-            },
-            target,
-        )
-        saved = load_orders(target)["orders"]["d-corrupt"]
-        assert saved["sets"] is None
-        assert "trade_url" not in saved
-    finally:
-        if target.exists():
-            target.unlink()
+            }
+        },
+        target,
+    )
+    saved = load_orders(target)["orders"]["d-corrupt"]
+    assert saved["sets"] is None
+    assert "trade_url" not in saved
