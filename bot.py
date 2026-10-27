@@ -1103,11 +1103,11 @@ def check_fp_status(message):
     status_icon = "🟢 ОНЛАЙН АКТИВЕН" if fp_state["online"] else "🔴 НЕ ПОДКЛЮЧЕН"
     auto_status = "ВКЛЮЧЕН 🟢" if is_autostart_enabled() else "ВЫКЛЮЧЕН 🔴"
     text = (
-        f"📡 **Статус системы FunPay:**\\n\\n"
-        f"• Статус: **{status_icon}** (ID: `{fp_state['user_id']}`)\\n"
-        f"• Последний пинг: `{fp_state['last_ping']}`\\n"
-        f"• Автоподнятие лотов: `{fp_state['last_raise']}`\\n"
-        f"• Автовыдача FunPay: **Приостановлена до подтверждения разрешенного способа передачи**\\n"
+        f"📡 **Статус системы FunPay:**\n\n"
+        f"• Статус: **{status_icon}** (ID: `{fp_state['user_id']}`)\n"
+        f"• Последний пинг: `{fp_state['last_ping']}`\n"
+        f"• Автоподнятие лотов: `{fp_state['last_raise']}`\n"
+        f"• Автовыдача FunPay: **Приостановлена до подтверждения разрешенного способа передачи**\n"
         f"• Автозапуск Windows: **{auto_status}**"
     )
     bot.send_message(message.chat.id, text, reply_markup=build_admin_keyboard(), parse_mode="Markdown")
