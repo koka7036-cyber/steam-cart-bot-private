@@ -30,6 +30,12 @@ def payment_key(node_id: str, text: str) -> str:
     return f"fp-chat-{node_id}-{digest}"
 
 
+
+def message_signature(sender_name: str, preview: str) -> str:
+    """Create a stable signature without storing the message preview itself."""
+    source = f"{sender_name or ''}:{preview or ''}".encode("utf-8", errors="replace")
+    return hashlib.sha256(source).hexdigest()
+
 def register_payment(orders: dict, *, node_id: str, buyer: str, text: str,
                      sets_per_item: int, quantity: int) -> tuple[dict, bool]:
     """Create exactly one record for a payment notification.
