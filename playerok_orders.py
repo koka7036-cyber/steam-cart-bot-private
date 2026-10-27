@@ -156,7 +156,9 @@ def upsert_deal(
         if record.get("fulfillment_status") != "needs_review":
             record["fulfillment_status"] = "needs_review"
             changed = True
-        record["mapping_conflict"] = True
+        if record.get("mapping_conflict") is not True:
+            record["mapping_conflict"] = True
+            changed = True
     elif not previous_item_id and safe_item_id:
         record["item_id"] = safe_item_id
         changed = True
