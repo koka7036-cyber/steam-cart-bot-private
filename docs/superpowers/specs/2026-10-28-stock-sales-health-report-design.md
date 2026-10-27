@@ -12,6 +12,9 @@ Make the current Telegram admin bot easier to operate from a phone and reduce un
 - Add a pure analytics module and tests.
 - Add a Telegram report for full sets in cache, cache freshness, unused one-set/five-set voucher pools per marketplace, and codes marked used after Steam returned a trade-offer ID.
 - Add timestamps to newly created voucher records and mark timestamp only after the existing successful-offer path.
+- Delay acknowledgement of unread FunPay chats until detail retrieval and handling succeed; retry on temporary fetch errors.
+- Store hashed message signatures instead of raw preview text and redact trade URLs from administrative notifications.
+- Check deployment PowerShell scripts for parse errors on a Windows GitHub Actions runner.
 - Warn on fewer than 10 full sets, critical below 5, and cache age greater than 6 hours.
 - Include the module in local backups, updater deployment and CI compilation.
 
