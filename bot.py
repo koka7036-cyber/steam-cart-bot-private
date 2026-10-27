@@ -938,7 +938,9 @@ def handle_all_messages(message):
             m_node = re.search(r'#node(\d+)', message.reply_to_message.text)
             if m_node:
                 target_node = m_node.group(1)
-        elif message.chat.id in active_reply_target and not text.startswith("SET") and "steamcommunity.com" not in text:
+        elif message.chat.id in active_reply_target:
+            # The admin explicitly entered reply mode; send the next text verbatim,
+            # including codes or URLs that would otherwise be mistaken for customer input.
             target_node = active_reply_target[message.chat.id]
 
         if target_node:
