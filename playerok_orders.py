@@ -18,8 +18,8 @@ from typing import Any
 ACTIVE_INPUT_STATUSES = {"awaiting_trade_url", "manual_review", "needs_review"}
 FINAL_PLATFORM_STATUSES = {"confirmed", "rolled_back"}
 CLOSED_FOR_INPUT_STATUSES = {"confirmed", "rolled_back", "problem", "problem_resolved"}
-_URL_RE = re.compile(r"https?://[^\\s<>]+", re.IGNORECASE)
-_SECRET_RE = re.compile(r"\\b(?:token|access_token|session|cookie|jwt)\\s*[=:]\\s*[^\\s&<>]+", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+_SECRET_RE = re.compile(r"\b(?:token|access_token|session|cookie|jwt)\s*[=:]\s*[^\s&<>]+", re.IGNORECASE)
 _LOCK = RLock()
 
 
@@ -356,9 +356,9 @@ def save_orders(data: dict, path: str | os.PathLike[str] = "playerok_orders.json
     with _LOCK:
         fd, temp_name = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(parent))
         try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\\n") as handle:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump(safe_data, handle, ensure_ascii=False, indent=2, sort_keys=True)
-                handle.write("\\n")
+                handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_name, target)
