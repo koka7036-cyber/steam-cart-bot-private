@@ -329,14 +329,27 @@ def register_funpay_payment(node_id, buyer, text, sets_per_item, quantity):
 
 
 def record_funpay_buyer_input(node_id, has_trade_url, has_file):
-    """Record that data arrived without saving a Steam URL or downloaded file."""
+    """Record incoming data only when exactly one open order can be matched."""
     if not has_trade_url and not has_file:
-        return None
+        return None, "no_input"
     with funpay_orders_lock:
         data = load_funpay_orders()
         record = find_open_order_for_chat(data["orders"], node_id)
         if not record:
-            return None
+            candidates = [
+                item for item in data["orders"].values()
+                if isinstance(item, dict)
+                and str(item.get("node_id")) == str(node_id)
+                and item.get("status") in {"awaiting_input", "input_received", "reserved", "review"}
+            ]
+            if len(candidates) > 1:
+                return None, "ambiguous"
+            return None, "unmatched"
+
+        # Don't re-process duplicate input events or overwrite the original input.
+        if record.get("input_received_at") or record.get("status") == "input_received":
+            return record, "duplicate"
+
         input_kind = "chat_trade_url" if has_trade_url else "file_attachment"
         mark_input_received(record, input_kind)
         policy = get_funpay_delivery_policy()
@@ -351,7 +364,7 @@ def record_funpay_buyer_input(node_id, has_trade_url, has_file):
                 "Данные получены, но автоматическая выдача отключена защитой модерации."
             )
         save_json(FP_ORDERS_FILE, data)
-        return record
+        return record, "recorded"
 
 def funpay_check_unread_chats():
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
