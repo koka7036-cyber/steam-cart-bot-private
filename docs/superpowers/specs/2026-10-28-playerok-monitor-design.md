@@ -15,6 +15,7 @@ A fully native undocumented GraphQL client was rejected because it would couple 
 - `PLAYEROK_TOKEN`: optional session token, stored only as a Windows user environment variable, never in code, Telegram messages, repository files, or logs.
 - `PLAYEROK_USER_AGENT`: optional browser user-agent associated with the account's current session.
 - `PLAYEROK_ITEM_1_SET_ID` and `PLAYEROK_ITEM_5_SET_ID`: exact Playerok listing IDs, used for deterministic 1-set/5-set mapping. Unknown or colliding IDs must go to manual review.
+- On startup, reconcile up to five pages (at most 120) of existing seller deals in `PAID`/`PENDING` state to recover open orders created while the bot was offline. This is read-only and deduplicated by deal ID.
 - Optional monitoring package is kept in `requirements-playerok.txt`, not the core `requirements.txt`, so the existing bot does not suddenly acquire third-party API dependencies.
 
 ## Order ledger
