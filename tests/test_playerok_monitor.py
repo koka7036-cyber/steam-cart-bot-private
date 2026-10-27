@@ -46,7 +46,7 @@ def test_monitor_awaits_async_listener_and_supports_private_router(monkeypatch):
             deal = types.SimpleNamespace(
                 id="open-deal-1",
                 status="PAID",
-                item=types.SimpleNamespace(id="one", name="One-set lot"),
+                item=types.SimpleNamespace(id="one", name="One-set lot https://steamcommunity.com/tradeoffer/new/?partner=1&token=do-not-persist"),
                 chat=types.SimpleNamespace(id="chat-1"),
             )
             page_info = types.SimpleNamespace(has_next_page=False, end_cursor=None)
@@ -97,5 +97,7 @@ def test_monitor_awaits_async_listener_and_supports_private_router(monkeypatch):
     assert event["is_initial_sync"] is True
     assert event["deal_id"] == "open-deal-1"
     assert event["sets"] == 1
+    assert "tradeoffer/new" not in event["item_name"]
+    assert "do-not-persist" not in event["item_name"]
     assert "trade_url" not in event
     assert monitor.status()["last_sync_count"] == 1
