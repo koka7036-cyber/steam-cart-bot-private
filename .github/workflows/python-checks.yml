@@ -22,7 +22,7 @@ jobs:
       - name: Install test runner
         run: python -m pip install --upgrade pip pytest
       - name: Compile Python files
-        run: python -m compileall -q bot.py funpay_orders.py order_parser.py sales_analytics.py
+        run: python -m compileall -q bot.py funpay_orders.py order_parser.py sales_analytics.py playerok_orders.py playerok_monitor.py
       - name: Run regression tests
         run: python -m pytest -q
 
@@ -34,7 +34,7 @@ jobs:
       - name: Parse Windows deployment scripts
         shell: pwsh
         run: |
-          $files = @('update_bot.ps1', 'run_bot.ps1', 'backup_bot.ps1')
+          $files = @('update_bot.ps1', 'run_bot.ps1', 'backup_bot.ps1', 'configure_playerok.ps1')
           foreach ($file in $files) {
             $tokens = $null
             $errors = $null
@@ -45,3 +45,25 @@ jobs:
             }
             Write-Host ('Parsed ' + $file)
           }
+
+  playerok-sdk-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install optional Playerok SDK
+        run: python -m pip install --disable-pip-version-check -r requirements-playerok.txt
+      - name: Verify read-only SDK imports and async listener contract
+        run: |
+          python - <<'PY'
+          import inspect
+          from PyPlayerokAPI.account import AccountClient
+          from PyPlayerokAPI.stream import PlayerokAccountListener
+          assert callable(AccountClient)
+          assert inspect.iscoroutinefunction(PlayerokAccountListener.start)
+          print("Playerok SDK imports verified; listener.start() is async.")
+          PY

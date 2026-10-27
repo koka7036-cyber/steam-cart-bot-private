@@ -32,6 +32,7 @@ CACHE_FILE = "inventory_cache.json"
 SESSION_FILE = "steam_session.json"
 FP_CONFIG_FILE = "funpay_config.json"
 FP_ORDERS_FILE = "funpay_orders.json"
+PLAYEROK_ORDERS_FILE = "playerok_orders.json"
 
 if not TG_TOKEN:
     raise RuntimeError("Установи переменную окружения TG_TOKEN перед запуском бота.")
@@ -116,6 +117,8 @@ active_reply_target = {}
 pending_customer_codes = {}
 delivery_lock = threading.Lock()
 funpay_orders_lock = threading.Lock()
+playerok_orders_lock = threading.RLock()
+playerok_monitor = None
 
 def get_fp_session():
     cfg = load_json(FP_CONFIG_FILE, {"golden_key": ""})
@@ -247,6 +250,15 @@ def send_funpay_chat_message(node_id, text):
 from order_parser import detect_order_sets_and_quantity
 from funpay_orders import find_open_order_for_chat, mark_input_received, register_payment, message_signature
 from sales_analytics import summarize_sales
+from playerok_orders import (
+    active_orders_for_chat,
+    load_orders as load_playerok_orders,
+    mark_trade_url_received,
+    save_orders as save_playerok_orders,
+    summarize_orders,
+    upsert_deal,
+)
+from playerok_monitor import PlayerokMonitor
 
 
 def load_funpay_orders():
@@ -909,6 +921,216 @@ def build_sales_analytics_text():
     ])
     return "\n".join(lines)
 
+
+def _get_playerok_monitor_status():
+    if playerok_monitor is None:
+        return {
+            "state": "not_configured" if not os.getenv("PLAYEROK_TOKEN", "").strip() else "stopped",
+            "username": None,
+            "last_event_at": None,
+            "last_error": None,
+            "configured": bool(os.getenv("PLAYEROK_TOKEN", "").strip()),
+            "one_set_mapping_ready": bool(os.getenv("PLAYEROK_ITEM_1_SET_ID", "").strip()),
+            "five_set_mapping_ready": bool(os.getenv("PLAYEROK_ITEM_5_SET_ID", "").strip()),
+            "mappings_distinct": bool(os.getenv("PLAYEROK_ITEM_1_SET_ID", "").strip() and os.getenv("PLAYEROK_ITEM_5_SET_ID", "").strip() and os.getenv("PLAYEROK_ITEM_1_SET_ID") != os.getenv("PLAYEROK_ITEM_5_SET_ID")),
+            "auto_delivery": False,
+        }
+    return playerok_monitor.status()
+
+
+def build_playerok_dashboard_text(show_orders=False):
+    state = _get_playerok_monitor_status()
+    try:
+        with playerok_orders_lock:
+            ledger = load_playerok_orders(PLAYEROK_ORDERS_FILE)
+            orders = ledger["orders"]
+    except Exception as exc:
+        logging.error("Playerok ledger could not be read (%s)", type(exc).__name__)
+        orders = {}
+        ledger_error = True
+    else:
+        ledger_error = False
+    stats = summarize_orders(orders)
+    state_labels = {
+        "not_configured": "Не настроен",
+        "stopped": "Остановлен",
+        "connecting": "Подключение…",
+        "listening": "Авторизация прошла; слушатель запущен",
+        "missing_dependency": "Не установлена дополнительная библиотека",
+        "error": "Ошибка подключения",
+    }
+    lines = ["<b>🔵 PLAYEROK — ПАНЕЛЬ ПРОДАВЦА</b>"]
+    lines.append(f"Подключение: <b>{html.escape(state_labels.get(state.get('state'), str(state.get('state', 'неизвестно'))))}</b>")
+    if state.get("username"):
+        lines.append(f"Аккаунт: <code>{html.escape(str(state['username']))}</code>")
+    if state.get("last_error"):
+        lines.append(f"Последняя ошибка: <code>{html.escape(str(state['last_error']))}</code>")
+    if state.get("last_event_at"):
+        lines.append("Последнее событие: <code>" + time.strftime("%d.%m.%Y %H:%M:%S", time.localtime(state["last_event_at"])) + "</code>")
+    else:
+        lines.append("Последнее событие: пока не получено")
+    if state.get("last_sync_at"):
+        lines.append(
+            "Последняя сверка открытых сделок: <code>"
+            + time.strftime("%d.%m.%Y %H:%M:%S", time.localtime(state["last_sync_at"]))
+            + f"</code> — просмотрено: <b>{int(state.get('last_sync_count') or 0)}</b>"
+        )
+    if state.get("last_sync_error"):
+        lines.append(
+            "⚠️ Ошибка первой сверки: <code>"
+            + html.escape(str(state["last_sync_error"]))
+            + "</code>. Поток событий продолжает работать."
+        )
+    lines.append(f"Лот на 1 сет: {'✅ ID задан' if state.get('one_set_mapping_ready') else '⚠️ ID не задан'}")
+    lines.append(f"Лот на 5 сетов: {'✅ ID задан' if state.get('five_set_mapping_ready') else '⚠️ ID не задан'}")
+    if state.get("one_set_mapping_ready") and state.get("five_set_mapping_ready") and not state.get("mappings_distinct"):
+        lines.append("🚨 <b>Оба лота имеют одинаковый ID. Заказы будут требовать ручной проверки.</b>")
+    lines.extend([
+        "",
+        "<b>Сделки в локальном журнале</b>",
+        f"Всего: <b>{stats['total']}</b> | Оплачено, ожидает данных: <b>{stats['paid']}</b>",
+        f"Ожидают трейд-ссылку: <b>{stats['awaiting_trade_url']}</b>",
+        f"Трейд-ссылка замечена: <b>{stats['trade_url_received']}</b>",
+        f"Отправлено по статусу площадки: <b>{stats['sent']}</b> | Подтверждено: <b>{stats['confirmed']}</b>",
+        f"Проблемы: <b>{stats['problem']}</b> | Возвраты: <b>{stats['rolled_back']}</b>",
+        f"Ручная проверка: <b>{stats['needs_review']}</b>",
+        "",
+        "🚦 Автовыдача и изменение статусов Playerok: <b>ВЫКЛЮЧЕНЫ</b>",
+        "ℹ️ Журнал не сохраняет сами трейд-ссылки или текст сообщений.",
+    ])
+    if ledger_error:
+        lines.append("⚠️ Не удалось прочитать журнал. Файл не перезаписывался.")
+    if show_orders:
+        latest = sorted(orders.values(), key=lambda item: item.get("updated_at") or 0, reverse=True)[:8]
+        lines.extend(["", "<b>Последние сделки</b>"])
+        for record in latest:
+            item_name = html.escape(str(record.get("item_name") or "Лот не определён"))
+            deal_id = html.escape(str(record.get("deal_id") or "без ID"))
+            status = html.escape(str(record.get("platform_status") or "unknown"))
+            fulfillment = html.escape(str(record.get("fulfillment_status") or "unknown"))
+            sets = record.get("sets")
+            lines.append(f"• <code>{deal_id}</code> — {sets if sets in (1, 5) else '?'} сет. — {status}/{fulfillment} — {item_name}")
+        if not latest:
+            lines.append("Пока сделок нет.")
+    return "\n".join(lines)
+
+
+def build_playerok_dashboard_markup():
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("🔄 Обновить", callback_data="podash_refresh"),
+        types.InlineKeyboardButton("📋 Последние сделки", callback_data="podash_orders"),
+    )
+    return markup
+
+
+def handle_playerok_event(event):
+    """Persist a redacted Playerok event and notify only the configured admin."""
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    admin_id = db.get("admin_id")
+    event_type = str(event.get("event_type") or "UNKNOWN")
+    deal_id = event.get("deal_id")
+    trade_link_result = None
+    record = None
+    created = False
+    changed = False
+    try:
+        with playerok_orders_lock:
+            ledger = load_playerok_orders(PLAYEROK_ORDERS_FILE)
+            orders = ledger["orders"]
+            if deal_id:
+                record, created, changed = upsert_deal(
+                    orders,
+                    deal_id=deal_id,
+                    status=event.get("status") or event_type,
+                    item_id=event.get("item_id"),
+                    item_name=event.get("item_name"),
+                    chat_id=event.get("chat_id"),
+                    sets=event.get("sets"),
+                    event_type=event_type,
+                )
+            if event.get("has_trade_url") and event.get("chat_id"):
+                matched, trade_link_result = mark_trade_url_received(orders, chat_id=event["chat_id"])
+                if matched is not None:
+                    record = matched
+                    changed = changed or trade_link_result == "recorded"
+            if created or changed:
+                save_playerok_orders(ledger, PLAYEROK_ORDERS_FILE)
+    except Exception as exc:
+        logging.error("Playerok event processing failed (%s)", type(exc).__name__)
+        if admin_id:
+            bot.send_message(admin_id, "⚠️ Не удалось записать событие Playerok в журнал. Автоматических действий не выполнялось.")
+        return
+
+    if not admin_id:
+        return
+    if created and not event.get("is_initial_sync"):
+        sets_text = str(record.get("sets")) if record and record.get("sets") in (1, 5) else "не определено"
+        item_name = html.escape(str(record.get("item_name") or "лот не сопоставлен")) if record else "лот не сопоставлен"
+        review = " Требуется ручная проверка ID лота." if not record or record.get("sets") not in (1, 5) else ""
+        bot.send_message(
+            admin_id,
+            f"🛒 <b>Новая сделка Playerok</b>\nID: <code>{html.escape(str(deal_id))}</code>\nЛот: {item_name}\nКоличество: {sets_text} сет.\nСтатус: <code>{html.escape(str(record.get('platform_status', 'unknown')))}</code>.\nАвтовыдача выключена.{review}",
+            parse_mode="HTML",
+        )
+    elif changed and record and record.get("platform_status") in {"sent", "confirmed", "rolled_back", "problem"}:
+        bot.send_message(
+            admin_id,
+            f"🔔 <b>Изменение сделки Playerok</b>\nID: <code>{html.escape(str(record.get('deal_id')))}</code>\nСтатус: <code>{html.escape(str(record.get('platform_status')))}</code>\nАвтовыдача остаётся выключенной.",
+            parse_mode="HTML",
+        )
+    if event.get("has_trade_url") and trade_link_result:
+        if trade_link_result == "recorded":
+            bot.send_message(
+                admin_id,
+                f"📥 В чате Playerok замечена трейд-ссылка.\nСделка: <code>{html.escape(str(record.get('deal_id') if record else 'не сопоставлена'))}</code>. Сама ссылка не сохранялась. Проверь сделку вручную; автовыдача выключена.",
+                parse_mode="HTML",
+            )
+        elif trade_link_result == "ambiguous":
+            bot.send_message(admin_id, "⚠️ Трейд-ссылка в Playerok получена в чате с несколькими открытыми сделками. Автоматическое сопоставление запрещено; нужна ручная проверка.")
+        elif trade_link_result == "unmatched":
+            bot.send_message(admin_id, "⚠️ В Playerok замечена трейд-ссылка, но подходящая открытая сделка не найдена. Нужна ручная проверка.")
+
+
+def handle_playerok_monitor_status(status):
+    state = status.get("state")
+    if state not in {"listening", "missing_dependency", "error"}:
+        return
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    admin_id = db.get("admin_id")
+    if not admin_id:
+        return
+    messages = {
+        "listening": (
+            "🟢 Playerok: аккаунт авторизован, слушатель событий запущен. "
+            f"При запуске просмотрено открытых сделок: {int(status.get('last_sync_count') or 0)}. "
+            + (f"Сверка не завершилась: {status.get('last_sync_error')}. " if status.get("last_sync_error") else "")
+            + "Сделки только наблюдаются; автовыдача выключена."
+        ),
+        "missing_dependency": "⚠️ Playerok: не установлена дополнительная библиотека. Запусти configure_playerok.bat только после прочтения предупреждения о неофициальном API.",
+        "error": f"⚠️ Playerok: подключение остановилось ({html.escape(str(status.get('last_error') or 'неизвестная ошибка'))}). Проверь статус вручную; автоматических действий не выполнялось.",
+    }
+    try:
+        bot.send_message(admin_id, messages[state], parse_mode="HTML")
+    except Exception:
+        logging.exception("Could not notify admin about Playerok monitor status")
+
+
+def start_playerok_monitor():
+    global playerok_monitor
+    playerok_monitor = PlayerokMonitor(
+        token=os.getenv("PLAYEROK_TOKEN", ""),
+        user_agent=os.getenv("PLAYEROK_USER_AGENT", ""),
+        one_set_item_id=os.getenv("PLAYEROK_ITEM_1_SET_ID", ""),
+        five_set_item_id=os.getenv("PLAYEROK_ITEM_5_SET_ID", ""),
+        on_event=handle_playerok_event,
+        on_status=handle_playerok_monitor_status,
+    )
+    if os.getenv("PLAYEROK_TOKEN", "").strip():
+        playerok_monitor.start()
+    else:
+        logging.info("Playerok monitor not configured; no Playerok account was accessed.")
+
 def build_admin_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("🔄 Обновить кэш склада", "📊 Остатки в кэше")
@@ -918,6 +1140,7 @@ def build_admin_keyboard():
     markup.add("🟢 Статус FunPay 24/7", auto_label)
     markup.add("📋 Панель FunPay — сводка")
     markup.add("📈 Продажи и склад")
+    markup.add("🔵 Playerok — панель")
     return markup
 
 def build_customer_keyboard():
@@ -1192,6 +1415,27 @@ def funpay_dashboard_callback(call):
     bot.answer_callback_query(call.id, "Сводка обновлена." if call.data == "fpdash_refresh" else "Журнал обновлён.")
 
 
+@bot.callback_query_handler(func=lambda call: call.data in {"podash_refresh", "podash_orders"})
+def playerok_dashboard_callback(call):
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    if (
+        not call.message
+        or call.message.chat.id != db.get("admin_id")
+        or call.from_user.id != db.get("admin_id")
+    ):
+        bot.answer_callback_query(call.id, "Нет доступа.", show_alert=True)
+        return
+    text = build_playerok_dashboard_text(show_orders=(call.data == "podash_orders"))
+    try:
+        bot.edit_message_text(
+            text, call.message.chat.id, call.message.message_id,
+            reply_markup=build_playerok_dashboard_markup(), parse_mode="HTML"
+        )
+    except Exception as exc:
+        if "message is not modified" not in str(exc).lower():
+            logging.exception("Не удалось обновить панель Playerok")
+    bot.answer_callback_query(call.id, "Сделки обновлены." if call.data == "podash_refresh" else "Журнал обновлён.")
+
 @bot.message_handler(func=lambda m: m.text == "🟢 Статус FunPay 24/7")
 def check_fp_status(message):
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
@@ -1345,6 +1589,24 @@ def handle_all_messages(message):
         )
         return
 
+    if text in {"🔵 Playerok — панель", "/playerok_status"} and message.chat.id == db.get("admin_id"):
+        bot.send_message(
+            message.chat.id,
+            build_playerok_dashboard_text(),
+            reply_markup=build_playerok_dashboard_markup(),
+            parse_mode="HTML",
+        )
+        return
+
+    if text == "/playerok_orders" and message.chat.id == db.get("admin_id"):
+        bot.send_message(
+            message.chat.id,
+            build_playerok_dashboard_text(show_orders=True),
+            reply_markup=build_playerok_dashboard_markup(),
+            parse_mode="HTML",
+        )
+        return
+
     # 1. Ответ админа в чат FunPay
     if message.chat.id == db.get("admin_id"):
         if text == "/cancel":
@@ -1453,6 +1715,7 @@ if _instance_mutex is None:
 
 try:
     threading.Thread(target=funpay_background_worker, daemon=True).start()
+    start_playerok_monitor()
     bot.infinity_polling()
 finally:
     import ctypes

@@ -21,6 +21,15 @@ try {
             [Environment]::SetEnvironmentVariable($name, $value, 'Process')
         }
 
+        # Playerok settings are optional. A missing token keeps the monitor disabled.
+        $optionalNames = @('PLAYEROK_TOKEN', 'PLAYEROK_USER_AGENT', 'PLAYEROK_ITEM_1_SET_ID', 'PLAYEROK_ITEM_5_SET_ID')
+        foreach ($name in $optionalNames) {
+            $value = [Environment]::GetEnvironmentVariable($name, 'User')
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+            }
+        }
+
         Set-Location 'C:\CardBot'
         & py -3 bot.py
         $exitCode = $LASTEXITCODE

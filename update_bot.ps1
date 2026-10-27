@@ -4,7 +4,7 @@ $live = 'C:\CardBot'
 $log = Join-Path $live 'auto_update.log'
 $marker = Join-Path $live 'auto_update_commit.txt'
 $requirementsSnapshot = Join-Path $live 'requirements.installed.txt'
-$deployFiles = @('bot.py', 'order_parser.py', 'funpay_orders.py', 'sales_analytics.py', 'update_bot.ps1', 'run_bot.ps1', 'backup_bot.ps1')
+$deployFiles = @('bot.py', 'order_parser.py', 'funpay_orders.py', 'sales_analytics.py', 'playerok_orders.py', 'playerok_monitor.py', 'requirements-playerok.txt', 'configure_playerok.ps1', 'configure_playerok.bat', 'update_bot.ps1', 'run_bot.ps1', 'backup_bot.ps1')
 
 function Write-Log([string]$Message) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Message"
