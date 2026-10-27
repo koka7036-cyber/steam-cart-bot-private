@@ -21,6 +21,11 @@ _TRADE_URL_RE = re.compile(
     r"https?://steamcommunity\.com/tradeoffer/new/\?[^\s<>]+",
     re.IGNORECASE,
 )
+_URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+_SECRET_RE = re.compile(
+    r"\b(?:token|access_token|session|cookie|jwt)\s*[=:]\s*[^\s&<>]+",
+    re.IGNORECASE,
+)
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
@@ -41,7 +46,12 @@ def _get(obj: Any, *names: str) -> Any:
 def _safe_label(value: Any, limit: int = 140) -> str | None:
     if value is None:
         return None
-    result = " ".join(str(value).split()).strip()
+    result = str(value)
+    # Listing names are untrusted metadata; do not pass embedded URLs/tokens
+    # into the event callback or persist them in the local order ledger.
+    result = _URL_RE.sub("[URL скрыта]", result)
+    result = _SECRET_RE.sub("[секрет скрыт]", result)
+    result = " ".join(result.split()).strip()
     return result[:limit] or None
 
 
