@@ -460,13 +460,23 @@ def funpay_check_unread_chats():
                     has_file = bool(re.search(
                         r"(?:chat-msg-(?:file|attachment)|attachment|download)", last_message_html, re.IGNORECASE
                     ))
-                    input_record = record_funpay_buyer_input(node_id, has_trade_url, has_file)
-                    if input_record:
+                    input_record, input_result = record_funpay_buyer_input(node_id, has_trade_url, has_file)
+                    if input_record and input_result == "recorded":
                         mode = "ссылка в чате" if has_trade_url else "файл в чате"
                         bot.send_message(
                             admin_id,
                             f"📥 По заказу {input_record['key']} получены данные: {mode}.\n"
                             f"Статус: {input_record['status']}. Автоматическая отправка карточек не выполнялась."
+                        )
+                        continue
+                    if input_result == "duplicate":
+                        # Same chat/input was already recorded; don't overwrite state or send duplicate alert.
+                        continue
+                    if input_result == "ambiguous":
+                        bot.send_message(
+                            admin_id,
+                            f"⚠️ В чате FunPay #node{node_id} получены данные, но найдено несколько открытых заказов. "
+                            "Автоматически привязать файл/ссылку нельзя. Нужна ручная проверка."
                         )
                         continue
                     markup = types.InlineKeyboardMarkup()
