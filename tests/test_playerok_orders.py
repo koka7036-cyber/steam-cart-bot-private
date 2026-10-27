@@ -148,3 +148,50 @@ def test_summary_counts_orders_without_revenue_estimates():
     assert summary["confirmed"] == 1
     assert summary["needs_review"] == 1
     assert "revenue" not in summary
+
+
+def test_atomic_ledger_save_strips_unapproved_fields_and_trade_urls(tmp_path):
+    from playerok_orders import load_orders, save_orders
+
+    target = tmp_path / "playerok_orders.json"
+    link = "https://steamcommunity.com/tradeoffer/new/?partner=123&token=private-token"
+    save_orders(
+        {
+            "orders": {
+                "d1": {
+                    "deal_id": "d1",
+                    "platform_status": "paid",
+                    "fulfillment_status": "manual_review",
+                    "sets": 1,
+                    "trade_url_received": True,
+                    "trade_url": link,
+                    "message_text": link,
+                    "session_token": "secret-session-token",
+                }
+            }
+        },
+        target,
+    )
+    raw = target.read_text(encoding="utf-8")
+    saved = load_orders(target)["orders"]["d1"]
+    assert link not in raw
+    assert "private-token" not in raw
+    assert "secret-session-token" not in raw
+    assert "trade_url" not in saved
+    assert "message_text" not in saved
+    assert "session_token" not in saved
+
+
+def test_listing_name_redacts_urls_before_persistence():
+    orders = {}
+    record, _, _ = upsert_deal(
+        orders,
+        deal_id="d-url",
+        status="PAID",
+        item_id="item-one",
+        item_name="Steam cards https://steamcommunity.com/tradeoffer/new/?token=never-store",
+        chat_id="c-url",
+        sets=1,
+    )
+    assert "tradeoffer/new" not in record["item_name"]
+    assert "never-store" not in record["item_name"]
