@@ -1056,6 +1056,9 @@ def count_available_sets(cache_data):
 
 def pick_cards_for_sets(sets_needed):
     cache_data = load_json(CACHE_FILE, {})
+    # Refresh the exclusion set on every selection. Items can remain in Steam's
+    # inventory while a trade offer is pending and must not be offered twice.
+    cache_data = apply_reserved_assets_to_cache(cache_data)
     games = cache_data.get("games", {})
     if not games:
         return None, None, "Кэш пуст! Нажми «🔄 Обновить кэш склада»."
