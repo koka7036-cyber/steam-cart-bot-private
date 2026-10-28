@@ -278,7 +278,7 @@ def send_funpay_chat_message(node_id, text):
         return False, f"Ошибка отправки: {e}"
 
 from order_parser import detect_order_sets_and_quantity
-from funpay_orders import (decode_text_attachment, extract_steam_trade_url, extract_text_attachment_href, find_open_order_for_chat, mark_input_received, register_payment, message_signature)
+from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, find_open_order_for_chat, mark_input_received, register_payment, message_signature)
 from sales_analytics import summarize_sales
 from playerok_orders import (
     active_orders_for_chat,
@@ -704,23 +704,27 @@ def funpay_check_unread_chats():
             try:
                 r_node = s.get(f"https://funpay.com/chat/?node={node_id}", timeout=10)
                 r_node.raise_for_status()
-                full_msgs = re.findall(r'<div class="chat-msg-text">([\s\S]*?)</div>', r_node.text)
-                if full_msgs:
-                    last_message_html = full_msgs[-1]
-                    full_text = html.unescape(re.sub(r'<[^>]+>', '', last_message_html).strip())
+                # Restrict extraction to the most recent message wrapper. Looking at
+                # the last .chat-msg-text alone can accidentally reuse an old link
+                # when the buyer's latest message is an attachment.
+                last_message_html = extract_last_chat_message_fragment(r_node.text) or ""
+                if last_message_html:
+                    full_text = html.unescape(re.sub(r"<[^>]+>", "", last_message_html).strip())
                     detail_loaded = True
                     if not full_text.strip() and re.search(
                         r"chat-msg-(?:file|attachment)|data-type=['\"]attachment['\"]",
                         last_message_html, re.IGNORECASE
                     ):
                         full_text = "Вложение в чате FunPay"
-                elif re.search(r"chat-msg-(?:file|attachment)|data-type=['\"]attachment['\"]", r_node.text, re.IGNORECASE):
-                    # Attachment-only message: flag it for manual inspection without
-                    # downloading the file or trusting its contents.
-                    last_message_html = r_node.text
-                    detail_loaded = True
-                    if not full_text.strip():
-                        full_text = "Вложение в чате FunPay"
+                else:
+                    # A single text node is safe as a compatibility fallback. Multiple
+                    # old text nodes without a recognized wrapper are ambiguous: retry
+                    # rather than risking delivery to a link from an earlier message.
+                    full_msgs = re.findall(r'<div class="chat-msg-text">([\s\S]*?)</div>', r_node.text)
+                    if len(full_msgs) == 1:
+                        last_message_html = full_msgs[0]
+                        full_text = html.unescape(re.sub(r"<[^>]+>", "", last_message_html).strip())
+                        detail_loaded = bool(full_text.strip())
             except Exception as exc:
                 logging.warning("Не удалось прочитать детали чата FunPay #node%s: %s", node_id, type(exc).__name__)
                 continue
