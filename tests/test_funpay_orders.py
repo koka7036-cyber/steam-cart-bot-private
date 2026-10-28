@@ -1,5 +1,6 @@
 """Regression tests for safe FunPay order matching."""
-from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, mark_input_received, register_payment)
+from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, is_funpay_system_message, mark_input_received, register_payment)
+from order_parser import is_paid_order_notification
 
 
 def make_order(key, node_id="123", status="awaiting_input", updated_at=1):
@@ -270,3 +271,44 @@ def test_extract_attachment_link_inside_funpay_message_wrapper():
     assert extract_text_attachment_href(
         fragment, "https://funpay.com/chat/?node=987"
     ) == "https://funpay.com/file/download/987"
+
+
+
+def test_order_creation_notification_is_not_treated_as_paid():
+    assert not is_paid_order_notification("Создан заказ #123456: набор из 1 сета Steam")
+
+
+def test_order_number_and_product_description_are_not_payment_proof():
+    assert not is_paid_order_notification("Заказ #123456 — 1 сет карточек Steam")
+
+
+def test_explicit_paid_order_notification_is_recognized():
+    assert is_paid_order_notification("Покупатель оплатил заказ #123456: 1 сет карточек Steam")
+    assert is_paid_order_notification("Покупатель CoolBuyer оплатил заказ #123456. Лот: 1 сет Steam")
+    assert is_paid_order_notification("Buyer CoolBuyer paid for order #123456: 1 set of Steam cards")
+    assert is_paid_order_notification("Order #123456 has been paid: 5 Steam card sets")
+    assert is_paid_order_notification("Заказ успешно оплачен: 5 сетов Steam")
+    assert is_paid_order_notification("Оплата получена, переведите товар покупателю")
+
+
+def test_negative_payment_text_is_not_treated_as_paid():
+    assert not is_paid_order_notification("Покупатель не оплатил заказ #123456: 1 сет Steam")
+    assert not is_paid_order_notification("Оплата не прошла")
+
+
+
+def test_system_message_requires_funpay_alert_marker():
+    assert is_funpay_system_message('<div role="alert">Покупатель Alex оплатил заказ #ABC12345</div>')
+    assert is_funpay_system_message(
+        '<div class="alert alert-with-icon alert-info">Заказ оплачен</div>'
+    )
+    assert not is_funpay_system_message(
+        '<div class="chat-msg-text">Покупатель Alex оплатил заказ #ABC12345</div>'
+    )
+
+
+def test_funpay_order_number_can_contain_letters():
+    from funpay_orders import extract_order_number, payment_key
+    text = "Покупатель Alex оплатил заказ #ABC12345. Лот: Steam cards"
+    assert extract_order_number(text) == "ABC12345"
+    assert payment_key("123", text) == "fp-order-ABC12345"

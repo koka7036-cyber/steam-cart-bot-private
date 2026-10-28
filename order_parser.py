@@ -3,6 +3,32 @@ import html
 import re
 
 
+def is_paid_order_notification(order_text):
+    """Require explicit payment-success wording; order creation alone isn't proof of payment."""
+    text = html.unescape(order_text or "").lower().replace("ё", "е")
+    if re.search(
+        r"\bне\s+(?:оплатил|оплачен|оплачена|оплачено|оплачены)\b|"
+        r"\bоплата\s+не\s+(?:прошла|получена|подтверждена)\b",
+        text,
+    ):
+        return False
+
+    paid_markers = (
+        # FunPay's system message includes the buyer's nickname between "Покупатель" and "оплатил".
+        r"\bпокупатель\b[\s\S]{0,120}\bоплатил(?:\s+заказ)?\b",
+        r"\b(?:покупатель\s+)?оплатил(?:\s+заказ)?\b",
+        r"\bзаказ\s+(?:успешно\s+)?оплачен(?:а|о|ы)?\b",
+        r"\bоплата\s+(?:успешно\s+)?(?:прошла|получена|подтверждена|успешна)\b",
+        r"\b(?:успешная|успешную)\s+оплата\b",
+        r"\bплат[её]ж\s+(?:получен|успешен|подтвержден)\b",
+        r"\bпереведите\s+(?:товар|покупателю)\b",
+        r"\bbuyer\b[\s\S]{0,120}\bpaid\s+(?:for\s+)?(?:order\b)?",
+        r"\border\s*(?:#[A-Z0-9]{4,24})?\s+(?:has\s+been\s+)?paid\b",
+        r"\bpayment\s+(?:was\s+)?(?:received|successful|confirmed)\b",
+    )
+    return any(re.search(pattern, text) for pattern in paid_markers)
+
+
 def detect_order_sets_and_quantity(order_text):
     """Return (sets_per_item, quantity) for supported FunPay card-set listings."""
     text = html.unescape(order_text or "").lower().replace("ё", "е")
