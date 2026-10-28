@@ -98,6 +98,93 @@ class _AttachmentLinkParser(HTMLParser):
                 return
 
 
+class _LastChatMessageParser(HTMLParser):
+    """Extract the most recent top-level FunPay chat message without mixing old text into a new attachment."""
+
+    _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+    _MESSAGE_CLASSES = {"chat-msg", "chat-msg-item", "chat-msg-container", "chat-msg-wrapper"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self._depth = 0
+        self._parts = None
+        self.messages = []
+
+    def handle_starttag(self, tag, attrs):
+        raw = self.get_starttag_text() or ""
+        class_value = ""
+        for key, value in attrs:
+            if key.lower() == "class":
+                class_value = value or ""
+                break
+        classes = set(class_value.split())
+        is_message = tag.lower() in {"div", "li"} and bool(classes & self._MESSAGE_CLASSES)
+
+        if self._parts is None and is_message:
+            self._parts = [raw]
+            self._depth = 0 if tag.lower() in self._VOID_TAGS else 1
+            if self._depth == 0:
+                self.messages.append(raw)
+                self._parts = None
+            return
+
+        if self._parts is not None:
+            self._parts.append(raw)
+            if tag.lower() not in self._VOID_TAGS:
+                self._depth += 1
+
+    def handle_startendtag(self, tag, attrs):
+        raw = self.get_starttag_text() or ""
+        class_value = ""
+        for key, value in attrs:
+            if key.lower() == "class":
+                class_value = value or ""
+                break
+        classes = set(class_value.split())
+        is_message = tag.lower() in {"div", "li"} and bool(classes & self._MESSAGE_CLASSES)
+        if self._parts is None and is_message:
+            self.messages.append(raw)
+        elif self._parts is not None:
+            self._parts.append(raw)
+
+    def handle_endtag(self, tag):
+        if self._parts is None:
+            return
+        self._parts.append(f"</{tag}>")
+        self._depth -= 1
+        if self._depth <= 0:
+            self.messages.append("".join(self._parts))
+            self._parts = None
+            self._depth = 0
+
+    def handle_data(self, data):
+        if self._parts is not None:
+            self._parts.append(data)
+
+    def handle_entityref(self, name):
+        if self._parts is not None:
+            self._parts.append(f"&{name};")
+
+    def handle_charref(self, name):
+        if self._parts is not None:
+            self._parts.append(f"&#{name};")
+
+    def handle_comment(self, data):
+        if self._parts is not None:
+            self._parts.append(f"<!--{data}-->")
+
+
+def extract_last_chat_message_fragment(html_document: str) -> str | None:
+    """Return only the newest chat message wrapper, so an older URL cannot trigger delivery for a newer file."""
+    parser = _LastChatMessageParser()
+    try:
+        parser.feed(html_document or "")
+        parser.close()
+    except Exception:
+        return None
+    return parser.messages[-1] if parser.messages else None
+
+
 def extract_text_attachment_href(html_fragment: str, base_url: str) -> str | None:
     """Return one trusted FunPay-hosted text attachment URL from message HTML.
 
