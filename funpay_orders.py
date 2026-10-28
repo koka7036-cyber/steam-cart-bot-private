@@ -218,9 +218,10 @@ def decode_text_attachment(data: bytes, max_bytes: int = _MAX_TEXT_ATTACHMENT_BY
     # UTF-16 must be detected by its BOM; otherwise CP1251's single-byte decoder
     # can parse UTF-16/incorrect binary bytes into plausible-looking gibberish.
     if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
-        encodings = ("utf-16", "utf-8-sig", "cp1251")
+        encodings = ("utf-16",)
     else:
-        encodings = ("utf-8-sig", "cp1251", "utf-16")
+        # Do not guess UTF-16 without a BOM; arbitrary binary bytes can decode as gibberish.
+        encodings = ("utf-8-sig", "cp1251")
     last_error = None
     for encoding in encodings:
         try:
