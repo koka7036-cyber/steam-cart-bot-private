@@ -3,6 +3,28 @@ import html
 import re
 
 
+def is_paid_order_notification(order_text):
+    """Return True only for explicit payment-success wording, never order creation alone."""
+    text = html.unescape(order_text or "").lower().replace("ё", "е")
+    negative_payment = re.search(
+        r"\bне\s+(?:оплатил|оплачен|оплачена|оплачено|оплачены)\b|"
+        r"\bоплата\s+не\s+(?:прошла|получена|подтверждена)\b",
+        text,
+    )
+    if negative_payment:
+        return False
+
+    paid_markers = (
+        r"\b(?:покупатель\s+)?оплатил(?:\s+заказ)?\b",
+        r"\bзаказ\s+(?:успешно\s+)?оплачен(?:а|о|ы)?\b",
+        r"\bоплата\s+(?:успешно\s+)?(?:прошла|получена|подтверждена|успешна)\b",
+        r"\b(?:успешная|успешную)\s+оплата\b",
+        r"\bплат[её]ж\s+(?:получен|успешен|подтвержден)\b",
+        r"\bпереведите\s+(?:товар|покупателю)\b",
+    )
+    return any(re.search(pattern, text) for pattern in paid_markers)
+
+
 def detect_order_sets_and_quantity(order_text):
     """Return (sets_per_item, quantity) for supported FunPay card-set listings."""
     text = html.unescape(order_text or "").lower().replace("ё", "е")
