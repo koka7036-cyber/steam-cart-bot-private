@@ -1,5 +1,5 @@
 """Regression tests for safe FunPay order matching."""
-from funpay_orders import extract_steam_trade_url, find_open_order_for_chat, mark_input_received, register_payment
+from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, mark_input_received, register_payment)
 
 
 def make_order(key, node_id="123", status="awaiting_input", updated_at=1):
@@ -134,4 +134,139 @@ def test_extract_steam_trade_url_rejects_missing_token():
 def test_extract_steam_trade_url_rejects_ambiguous_multiple_links():
     a = "https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc"
     b = "https://steamcommunity.com/tradeoffer/new/?partner=456&token=def"
-    assert extract_steam_trade_url(a + "\\n" + b) is None
+    assert extract_steam_trade_url(a + "\n" + b) is None
+
+
+
+def test_extract_text_attachment_href_from_funpay_chat_file():
+    fragment = (
+        '<div class="chat-msg-file">'
+        '<a href="/file/12345" title="trade-url.txt">trade-url.txt</a>'
+        '</div>'
+    )
+    assert extract_text_attachment_href(
+        fragment, "https://funpay.com/chat/?node=987"
+    ) == "https://funpay.com/file/12345"
+
+
+def test_extract_text_attachment_href_rejects_external_hosts():
+    fragment = '<div class="chat-msg-file"><a href="https://example.com/trade.txt">trade.txt</a></div>'
+    assert extract_text_attachment_href(
+        fragment, "https://funpay.com/chat/?node=987"
+    ) is None
+
+
+def test_extract_text_attachment_href_requires_unambiguous_attachment():
+    fragment = (
+        '<div class="chat-msg-file"><a href="/file/1">one.txt</a></div>'
+        '<div class="chat-msg-file"><a href="/file/2">two.txt</a></div>'
+    )
+    assert extract_text_attachment_href(
+        fragment, "https://funpay.com/chat/?node=987"
+    ) is None
+
+
+def test_decode_text_attachment_utf8_and_windows1251():
+    url = "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=AbCdEf12"
+    assert extract_steam_trade_url(
+        decode_text_attachment(("Ссылка: " + url).encode("utf-8"))
+    ) == url
+    assert extract_steam_trade_url(
+        decode_text_attachment(("Ссылка: " + url).encode("cp1251"))
+    ) == url
+
+
+def test_decode_text_attachment_rejects_binary_data():
+    import pytest
+    with pytest.raises(ValueError):
+        decode_text_attachment(bytes([0, 1, 2, 3]))
+
+
+def test_decode_text_attachment_enforces_size_limit():
+    import pytest
+    with pytest.raises(ValueError):
+        decode_text_attachment(b"A" * (64 * 1024 + 1))
+
+
+def test_retry_required_order_is_open_for_corrected_input():
+    order = make_order("retry", status="retry_required")
+    assert find_open_order_for_chat({"retry": order}, "123") is order
+
+
+
+def test_extract_last_chat_message_fragment_does_not_reuse_old_trade_link_for_latest_file():
+    old_url = "https://steamcommunity.com/tradeoffer/new/?partner=123&token=OLD"
+    html_doc = (
+        '<div class="chat-msg-item"><div class="chat-msg-text">' + old_url + '</div></div>'
+        '<div class="chat-msg-item"><div class="chat-msg-file">'
+        '<a href="/file/765" title="trade-url.txt">trade-url.txt</a>'
+        '</div></div>'
+    )
+    fragment = extract_last_chat_message_fragment(html_doc)
+    assert fragment is not None
+    assert "token=OLD" not in fragment
+    assert "trade-url.txt" in fragment
+    assert extract_text_attachment_href(
+        fragment, "https://funpay.com/chat/?node=987"
+    ) == "https://funpay.com/file/765"
+
+
+def test_extract_last_chat_message_fragment_returns_latest_text():
+    html_doc = (
+        '<div class="chat-msg-item"><div class="chat-msg-text">old</div></div>'
+        '<div class="chat-msg-item"><div class="chat-msg-text">new</div></div>'
+    )
+    assert "new" in extract_last_chat_message_fragment(html_doc)
+    assert "old" not in extract_last_chat_message_fragment(html_doc)
+
+
+
+def test_filter_reserved_assets_excludes_pending_and_uncertain_offers():
+    cache = {
+        "total_cards": 4,
+        "games": {
+            "Game": {
+                "Card A": ["1", "2"],
+                "Card B": ["3", "4"],
+            }
+        },
+    }
+    orders = {
+        "paid": {
+            "status": "offer_sent",
+            "reservation": {"asset_ids": ["1"], "asset_locations": []},
+        },
+        "uncertain": {
+            "status": "delivery_uncertain",
+            "reservation": {"asset_ids": ["3"], "asset_locations": []},
+        },
+    }
+    filtered = filter_reserved_assets(cache, orders, {})
+    assert filtered["games"]["Game"]["Card A"] == ["2"]
+    assert filtered["games"]["Game"]["Card B"] == ["4"]
+    assert filtered["total_cards"] == 2
+    assert cache["games"]["Game"]["Card A"] == ["1", "2"]
+
+
+def test_filter_reserved_assets_excludes_uncertain_voucher_assets():
+    cache = {"games": {"Game": {"Card": ["1", "2", "3"]}}}
+    vouchers = {
+        "SET1-A": {
+            "delivery_state": "uncertain",
+            "reserved_asset_ids": ["2"],
+        }
+    }
+    filtered = filter_reserved_assets(cache, {}, vouchers)
+    assert filtered["games"]["Game"]["Card"] == ["1", "3"]
+
+
+
+def test_extract_attachment_link_inside_funpay_message_wrapper():
+    fragment = (
+        '<div class="chat-msg-item">'
+        '<div class="chat-message"><a href="/file/download/987">trade-url.txt</a></div>'
+        '</div>'
+    )
+    assert extract_text_attachment_href(
+        fragment, "https://funpay.com/chat/?node=987"
+    ) == "https://funpay.com/file/download/987"
