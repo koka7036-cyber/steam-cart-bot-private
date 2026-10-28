@@ -179,7 +179,7 @@ def test_decode_text_attachment_utf8_and_windows1251():
 def test_decode_text_attachment_rejects_binary_data():
     import pytest
     with pytest.raises(ValueError):
-        decode_text_attachment(b"\\x00\\x01\\x02\\x03")
+        decode_text_attachment(b"\x00\x01\x02\x03")
 
 
 def test_decode_text_attachment_enforces_size_limit():
