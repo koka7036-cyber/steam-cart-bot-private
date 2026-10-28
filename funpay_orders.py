@@ -14,6 +14,32 @@ import time
 OPEN_STATUSES = {"awaiting_input", "input_received", "reserved", "review"}
 
 
+
+STEAM_TRADE_URL_RE = re.compile(
+    r"https?://steamcommunity\.com/tradeoffer/new/\?[^\s<>\"']+",
+    re.IGNORECASE,
+)
+def extract_steam_trade_url(text: str) -> str | None:
+    """Extract one Steam trade URL from plain text; reject ambiguous or malformed input."""
+    matches = STEAM_TRADE_URL_RE.findall(text or "")
+    normalized = []
+    for candidate in matches:
+        candidate = candidate.rstrip(".,;:!?)]}")
+        parsed = __import__("urllib.parse", fromlist=["urlparse", "parse_qs"])
+        url = parsed.urlparse(candidate)
+        query = parsed.parse_qs(url.query)
+        if (
+            url.scheme in {"http", "https"}
+            and url.netloc.lower() == "steamcommunity.com"
+            and url.path.rstrip("/") == "/tradeoffer/new"
+            and query.get("partner", [""])[0].isdigit()
+            and query.get("token", [""])[0]
+        ):
+            normalized.append(candidate)
+    # Exactly one valid URL is required. Multiple links are ambiguous.
+    unique = list(dict.fromkeys(normalized))
+    return unique[0] if len(unique) == 1 else None
+
 def extract_order_number(text: str) -> str | None:
     """Extract the visible FunPay order number when it is present in a message."""
     match = re.search(r"(?:заказ|order)\s*[№#]?\s*(\d{4,})", text or "", re.IGNORECASE)
