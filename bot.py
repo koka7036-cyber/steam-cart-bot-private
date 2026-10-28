@@ -1028,17 +1028,26 @@ def pick_cards_for_sets(sets_needed):
     return selected_assets, (cache_data, picked_games_info, asset_locations), None
 
 def send_trade_offer(trade_url, asset_ids, code):
+    """Create one Steam offer. Timeouts are treated as an unknown result, never as a safe retry."""
+    normalized_url = extract_steam_trade_url(trade_url)
+    if not normalized_url:
+        return False, "Неверная трейд-ссылка Steam."
+    trade_url = normalized_url
     parsed = urllib.parse.urlparse(trade_url)
     params = urllib.parse.parse_qs(parsed.query)
     partner_id = params.get("partner", [None])[0]
     token = params.get("token", [None])[0]
-    if not partner_id or not token:
+    if not partner_id or not partner_id.isdigit() or not token:
         return False, "Неверная трейд-ссылка (отсутствует partner или token)."
 
-    partner_steamid64 = str(int(partner_id) + 76561197960265728)
+    try:
+        partner_steamid64 = str(int(partner_id) + 76561197960265728)
+    except (TypeError, ValueError, OverflowError):
+        return False, "Неверный Steam partner ID."
+
     steam_login_secure, err = get_steam_session()
     if err:
-        return False, err
+        return False, f"Steam-сессия недоступна до отправки: {err}"
 
     session_id = "".join(random.choices("0123456789abcdef", k=24))
     cookies = {"sessionid": session_id, "steamLoginSecure": steam_login_secure}
@@ -1058,25 +1067,156 @@ def send_trade_offer(trade_url, asset_ids, code):
         "sessionid": session_id,
         "serverid": "1",
         "partner": partner_steamid64,
-        "tradeoffermessage": f"Автовыдача по коду {code}. Спасибо за покупку!",
+        "tradeoffermessage": f"Заказ FunPay {code}. Спасибо за покупку!",
         "json_tradeoffer": json.dumps(tradeoffer_json),
         "captcha": "",
         "trade_offer_create_params": json.dumps({"trade_offer_access_token": token})
     }
 
     try:
-        r = requests.post("https://steamcommunity.com/tradeoffer/new/send", data=form_data, cookies=cookies, headers=headers, timeout=20)
-        res_json = r.json()
-    except Exception as e:
-        return False, f"Ошибка запроса к Steam: {e}"
+        response = requests.post(
+            "https://steamcommunity.com/tradeoffer/new/send",
+            data=form_data,
+            cookies=cookies,
+            headers=headers,
+            timeout=20,
+        )
+    except Exception:
+        # The request may have reached Steam even if the response was lost.
+        return False, "RESULT_UNKNOWN: Steam request ended without a confirmed response."
 
+    try:
+        res_json = response.json()
+    except Exception:
+        if response.status_code >= 500 or response.status_code == 200:
+            return False, "RESULT_UNKNOWN: Steam response could not be parsed; check outgoing offers before retrying."
+        return False, f"Steam rejected the trade request (HTTP {response.status_code})."
+
+    if response.status_code >= 500:
+        return False, "RESULT_UNKNOWN: Steam returned a server error; check outgoing offers before retrying."
     if "tradeofferid" not in res_json:
-        return False, f"Steam отклонил обмен (проверьте, открыт ли инвентарь в настройках приватности): {res_json.get('strError', res_json)}"
+        error_text = str(res_json.get("strError") or "Steam did not return a trade offer ID")
+        return False, f"Steam отклонил обмен: {error_text[:240]}"
 
-    offer_id = res_json["tradeofferid"]
-    time.sleep(2)
-    asf_command(f"2faok {STEAM_LOGIN}")
-    return True, f"Трейд #{offer_id} отправлен и подтвержден в ASF"
+    offer_id = str(res_json["tradeofferid"])
+    confirm_ok, confirm_result = asf_command(f"2faok {STEAM_LOGIN}")
+    if confirm_ok:
+        return True, f"TRADE_OFFER_ID:{offer_id};CONFIRMATION_OK;Steam offer created."
+    return True, f"TRADE_OFFER_ID:{offer_id};CONFIRMATION_PENDING;Steam offer created but ASF confirmation was not verified."
+
+
+def attempt_funpay_order_delivery(node_id, trade_url, input_kind):
+    """Send the reserved assets for one uniquely matched FunPay order."""
+    policy = get_funpay_delivery_policy()
+    if not policy.get("auto_delivery"):
+        return {"status": "review", "message": "Автоматическая выдача отключена настройкой."}
+    if input_kind == "chat_trade_url" and not policy.get("allow_chat_trade_url"):
+        return {"status": "review", "message": "Приём trade-ссылки в чате выключен настройкой."}
+
+    normalized_url = extract_steam_trade_url(trade_url)
+    if not normalized_url:
+        return {"status": "review", "message": "Trade-ссылка не прошла проверку."}
+
+    # Keep lock order consistent with register_funpay_payment -> reserve_funpay_order.
+    with funpay_orders_lock:
+        ledger = load_funpay_orders()
+        candidates = [
+            item for item in ledger["orders"].values()
+            if isinstance(item, dict)
+            and str(item.get("node_id")) == str(node_id)
+            and item.get("status") in {"awaiting_input", "input_received", "reserved", "review"}
+        ]
+        if not candidates:
+            return {"status": "unmatched", "message": "Не найден открытый оплаченный заказ."}
+        if len(candidates) != 1:
+            return {"status": "ambiguous", "message": "В чате несколько открытых заказов."}
+
+        record = candidates[0]
+        order_key = record.get("key", "unknown")
+        if record.get("status") in {"sending", "offer_sent", "offer_pending_confirmation", "delivery_unknown", "delivered", "cancelled"}:
+            return {"status": "duplicate", "order_key": order_key, "message": "Выдача уже начата или завершилась."}
+        reservation = record.get("reservation")
+        asset_ids = reservation.get("asset_ids", []) if isinstance(reservation, dict) else []
+        if not asset_ids:
+            record["status"] = "review"
+            record.setdefault("notes", []).append("Не создан резерв карточек; Steam-предложение не отправлялось.")
+            record["updated_at"] = int(time.time())
+            save_json(FP_ORDERS_FILE, ledger)
+            return {"status": "review", "order_key": order_key, "message": "Для заказа нет зарезервированных карточек."}
+
+        with delivery_lock:
+            # Persist intent before the external request. A restart must not resend blindly.
+            record["status"] = "sending"
+            record["delivery_attempted_at"] = int(time.time())
+            record["input_kind"] = input_kind
+            record["trade_url_sha256"] = __import__("hashlib").sha256(normalized_url.encode("utf-8")).hexdigest()
+            record["updated_at"] = int(time.time())
+            save_json(FP_ORDERS_FILE, ledger)
+
+            try:
+                ok, result_message = send_trade_offer(normalized_url, asset_ids, record.get("funpay_order_number") or order_key)
+            except Exception:
+                ok, result_message = False, "RESULT_UNKNOWN: unhandled error while sending to Steam."
+
+            if ok:
+                match = re.search(r"TRADE_OFFER_ID:(\d+)", result_message)
+                if not match:
+                    record["status"] = "delivery_unknown"
+                    record.setdefault("notes", []).append("Steam returned success without a usable offer ID; manual verification required.")
+                    result = {"status": "delivery_unknown", "order_key": order_key, "message": "Steam result was incomplete; verify outgoing offers."}
+                else:
+                    offer_id = match.group(1)
+                    pending_confirmation = "CONFIRMATION_PENDING" in result_message
+                    record["status"] = "offer_pending_confirmation" if pending_confirmation else "offer_sent"
+                    record["trade_offer_id"] = offer_id
+                    record["offer_sent_at"] = int(time.time())
+                    record.setdefault("notes", []).append(
+                        "Steam offer created; buyer acceptance is pending."
+                        if not pending_confirmation
+                        else "Steam offer created; ASF confirmation was not verified. Check manually."
+                    )
+                    result = {
+                        "status": "offer_pending_confirmation" if pending_confirmation else "offer_sent",
+                        "order_key": order_key,
+                        "offer_id": offer_id,
+                        "message": result_message,
+                    }
+            elif str(result_message).startswith("RESULT_UNKNOWN:"):
+                record["status"] = "delivery_unknown"
+                record.setdefault("notes", []).append("Steam request outcome is unknown. Automatic retry is blocked; verify outgoing offers manually.")
+                result = {"status": "delivery_unknown", "order_key": order_key, "message": result_message}
+            else:
+                # This is a confirmed pre-send failure/rejection. Keep the reservation,
+                # but allow a new buyer message after the cause is corrected.
+                record["status"] = "reserved"
+                record["input_received_at"] = None
+                record["input_kind"] = None
+                record["last_delivery_error"] = str(result_message)[:240]
+                record.setdefault("notes", []).append("Steam rejected or could not prepare the offer; reservation retained.")
+                result = {"status": "retryable_failure", "order_key": order_key, "message": str(result_message)[:240]}
+            record["updated_at"] = int(time.time())
+            save_json(FP_ORDERS_FILE, ledger)
+            return result
+
+
+def recover_interrupted_funpay_deliveries():
+    """Mark interrupted sends as unknown rather than risking a duplicate Steam offer."""
+    now = int(time.time())
+    changed = False
+    with funpay_orders_lock:
+        ledger = load_funpay_orders()
+        for record in ledger["orders"].values():
+            if not isinstance(record, dict) or record.get("status") != "sending":
+                continue
+            attempted_at = int(record.get("delivery_attempted_at") or 0)
+            if attempted_at and now - attempted_at < 120:
+                continue
+            record["status"] = "delivery_unknown"
+            record["updated_at"] = now
+            record.setdefault("notes", []).append("Bot restarted or stalled during Steam request; manual offer verification required.")
+            changed = True
+        if changed:
+            save_json(FP_ORDERS_FILE, ledger)
 
 def execute_delivery(chat_id, code, trade_url, db):
     # pyTelegramBotAPI handles updates in multiple threads. Serialize delivery
