@@ -284,6 +284,9 @@ def test_order_number_and_product_description_are_not_payment_proof():
 
 def test_explicit_paid_order_notification_is_recognized():
     assert is_paid_order_notification("Покупатель оплатил заказ #123456: 1 сет карточек Steam")
+    assert is_paid_order_notification("Покупатель CoolBuyer оплатил заказ #123456. Лот: 1 сет Steam")
+    assert is_paid_order_notification("Buyer CoolBuyer paid for order #123456: 1 set of Steam cards")
+    assert is_paid_order_notification("Order #123456 has been paid: 5 Steam card sets")
     assert is_paid_order_notification("Заказ успешно оплачен: 5 сетов Steam")
     assert is_paid_order_notification("Оплата получена, переведите товар покупателю")
 
