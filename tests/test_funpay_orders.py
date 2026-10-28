@@ -1,5 +1,5 @@
 """Regression tests for safe FunPay order matching."""
-from funpay_orders import extract_steam_trade_url, find_open_order_for_chat, mark_input_received, register_payment
+from funpay_orders import (decode_text_attachment, extract_steam_trade_url, extract_text_attachment_href, find_open_order_for_chat, mark_input_received, register_payment)
 
 
 def make_order(key, node_id="123", status="awaiting_input", updated_at=1):
@@ -135,3 +135,59 @@ def test_extract_steam_trade_url_rejects_ambiguous_multiple_links():
     a = "https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc"
     b = "https://steamcommunity.com/tradeoffer/new/?partner=456&token=def"
     assert extract_steam_trade_url(a + "\\n" + b) is None
+
+
+
+def test_extract_text_attachment_href_from_funpay_chat_file():
+    fragment = (
+        '<div class="chat-msg-file">'
+        '<a href="/file/12345" title="trade-url.txt">trade-url.txt</a>'
+        '</div>'
+    )
+    assert extract_text_attachment_href(
+        fragment, "https://funpay.com/chat/?node=987"
+    ) == "https://funpay.com/file/12345"
+
+
+def test_extract_text_attachment_href_rejects_external_hosts():
+    fragment = '<div class="chat-msg-file"><a href="https://example.com/trade.txt">trade.txt</a></div>'
+    assert extract_text_attachment_href(
+        fragment, "https://funpay.com/chat/?node=987"
+    ) is None
+
+
+def test_extract_text_attachment_href_requires_unambiguous_attachment():
+    fragment = (
+        '<div class="chat-msg-file"><a href="/file/1">one.txt</a></div>'
+        '<div class="chat-msg-file"><a href="/file/2">two.txt</a></div>'
+    )
+    assert extract_text_attachment_href(
+        fragment, "https://funpay.com/chat/?node=987"
+    ) is None
+
+
+def test_decode_text_attachment_utf8_and_windows1251():
+    url = "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=AbCdEf12"
+    assert extract_steam_trade_url(
+        decode_text_attachment(("Ссылка: " + url).encode("utf-8"))
+    ) == url
+    assert extract_steam_trade_url(
+        decode_text_attachment(("Ссылка: " + url).encode("cp1251"))
+    ) == url
+
+
+def test_decode_text_attachment_rejects_binary_data():
+    import pytest
+    with pytest.raises(ValueError):
+        decode_text_attachment(b"\\x00\\x01\\x02\\x03")
+
+
+def test_decode_text_attachment_enforces_size_limit():
+    import pytest
+    with pytest.raises(ValueError):
+        decode_text_attachment(b"A" * (64 * 1024 + 1))
+
+
+def test_retry_required_order_is_open_for_corrected_input():
+    order = make_order("retry", status="retry_required")
+    assert find_open_order_for_chat({"retry": order}, "123") is order
