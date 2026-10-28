@@ -134,7 +134,7 @@ def test_extract_steam_trade_url_rejects_missing_token():
 def test_extract_steam_trade_url_rejects_ambiguous_multiple_links():
     a = "https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc"
     b = "https://steamcommunity.com/tradeoffer/new/?partner=456&token=def"
-    assert extract_steam_trade_url(a + "\\n" + b) is None
+    assert extract_steam_trade_url(a + "\n" + b) is None
 
 
 
@@ -179,7 +179,7 @@ def test_decode_text_attachment_utf8_and_windows1251():
 def test_decode_text_attachment_rejects_binary_data():
     import pytest
     with pytest.raises(ValueError):
-        decode_text_attachment(b"\x00\x01\x02\x03")
+        decode_text_attachment(bytes([0, 1, 2, 3]))
 
 
 def test_decode_text_attachment_enforces_size_limit():
