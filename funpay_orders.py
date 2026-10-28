@@ -293,6 +293,30 @@ def filter_reserved_assets(cache_data: dict, orders: dict | None = None,
     return filtered
 
 
+def voucher_reset_block_reason(voucher: dict) -> str | None:
+    """Reject a manual code reset when a Steam offer may already exist or the code is consumed."""
+    if not isinstance(voucher, dict):
+        return "Запись кода повреждена; автоматический сброс небезопасен."
+    state = str(voucher.get("delivery_state") or "").lower()
+    if voucher.get("trade_offer_id") or state in {
+        "sending", "uncertain", "sent", "created_unconfirmed"
+    }:
+        return (
+            "У кода есть созданное или потенциально созданное Steam-предложение. "
+            "Не сбрасывай его повторно, чтобы не отправить карточки дважды; проверь историю Steam."
+        )
+    if voucher.get("used"):
+        return (
+            "Код уже отмечен использованным. Автоматический сброс запрещён: сначала вручную "
+            "убедись, что предложение не создавалось и карточки вернулись в инвентарь."
+        )
+    if voucher.get("reserved_asset_ids") and state != "failed":
+        return (
+            "У кода есть зарезервированные карточки. Сначала проверь состояние предыдущей операции в Steam."
+        )
+    return None
+
+
 def funpay_cold_start_blockers(orders: dict) -> list[tuple[str, str]]:
     """Return unresolved FunPay orders that must stay in the journal to protect reservations."""
     blockers = []
