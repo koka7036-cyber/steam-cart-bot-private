@@ -1273,10 +1273,10 @@ def funpay_cold_start_cmd(message):
             summary = ", ".join(f"{status}: {count}" for status, count in sorted(counts.items())) or "нет записей"
             bot.send_message(
                 message.chat.id,
-                "🧹 <b>Подготовка к чистому старту FunPay</b>\\n"
-                f"Записей в журнале: {len(orders)}\\nСтатусы: {html.escape(summary)}\\n\\n"
+                "🧹 <b>Подготовка к чистому старту FunPay</b>\n"
+                f"Записей в журнале: {len(orders)}\nСтатусы: {html.escape(summary)}\n\n"
                 "Команда удалит только журнал заказов FunPay после создания резервной копии. "
-                "Склад, кэш карточек, коды, настройки и Playerok не изменятся.\\n"
+                "Склад, кэш карточек, коды, настройки и Playerok не изменятся.\n"
                 "Если заказов действительно нет и ты хочешь продолжить, отправь: "
                 "<code>/fpcoldstart CONFIRM</code>",
                 parse_mode="HTML",
@@ -1298,7 +1298,7 @@ def funpay_cold_start_cmd(message):
     bot.send_message(
         message.chat.id,
         "✅ Журнал заказов FunPay очищен. Резервная копия сохранена: "
-        f"<code>{html.escape(backup_path)}</code>\\n"
+        f"<code>{html.escape(backup_path)}</code>\n"
         "Кэш склада, карточки, коды, настройки и данные Playerok не затронуты.",
         parse_mode="HTML",
     )
