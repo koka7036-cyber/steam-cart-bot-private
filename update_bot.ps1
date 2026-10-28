@@ -27,8 +27,15 @@ try {
         $deployedCommit = [System.IO.File]::ReadAllText($marker).Trim()
     }
     if ($deployedCommit -eq $commit) {
-        Write-Log "Без изменений; активная версия $commit."
-        exit 0
+        $missingFiles = @($deployFiles | Where-Object {
+            -not (Test-Path -LiteralPath (Join-Path $live $_) -PathType Leaf)
+        })
+        if ($missingFiles.Count -eq 0) {
+            Write-Log "Без изменений; активная версия $commit."
+            exit 0
+        }
+        Write-Log ("Восстановление неполного развёртывания версии " + $commit + "; отсутствуют: " + ($missingFiles -join ', '))
+        # Continue through the normal backup/stage/deploy path to repair missing files.
     }
 
     # Архивируем файлы именно из удалённого коммита, а не из локальной рабочей папки.
