@@ -1057,26 +1057,37 @@ def pick_cards_for_sets(sets_needed):
     return selected_assets, (cache_data, picked_games_info, asset_locations), None
 
 def send_trade_offer(trade_url, asset_ids, code):
-    parsed = urllib.parse.urlparse(trade_url)
+    """Create one Steam trade offer and distinguish definite failure from uncertain outcome."""
+    normalized_url = extract_steam_trade_url(trade_url)
+    if not normalized_url:
+        return "failed", "Неверная Steam trade-ссылка (требуются partner и token).", None
+    parsed = urllib.parse.urlparse(normalized_url)
     params = urllib.parse.parse_qs(parsed.query)
     partner_id = params.get("partner", [None])[0]
     token = params.get("token", [None])[0]
-    if not partner_id or not token:
-        return False, "Неверная трейд-ссылка (отсутствует partner или token)."
+    if not partner_id or not partner_id.isdigit() or not token:
+        return "failed", "Неверная Steam trade-ссылка (отсутствует partner или token).", None
+
+    asset_ids = list(dict.fromkeys(str(value) for value in asset_ids if str(value).isdigit()))
+    if not asset_ids:
+        return "failed", "Не выбраны карточки для обмена.", None
 
     partner_steamid64 = str(int(partner_id) + 76561197960265728)
     steam_login_secure, err = get_steam_session()
-    if err:
-        return False, err
+    if err or not steam_login_secure:
+        return "failed", err or "Steam-сессия недоступна.", None
 
     session_id = "".join(random.choices("0123456789abcdef", k=24))
     cookies = {"sessionid": session_id, "steamLoginSecure": steam_login_secure}
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
-        "Referer": trade_url,
+        "Referer": normalized_url,
         "Origin": "https://steamcommunity.com"
     }
-    assets_list = [{"appid": 753, "contextid": "6", "amount": 1, "assetid": str(aid)} for aid in asset_ids]
+    assets_list = [
+        {"appid": 753, "contextid": "6", "amount": 1, "assetid": aid}
+        for aid in asset_ids
+    ]
     tradeoffer_json = {
         "newversion": True,
         "version": 2,
@@ -1087,92 +1098,154 @@ def send_trade_offer(trade_url, asset_ids, code):
         "sessionid": session_id,
         "serverid": "1",
         "partner": partner_steamid64,
-        "tradeoffermessage": f"Автовыдача по коду {code}. Спасибо за покупку!",
+        "tradeoffermessage": f"Автовыдача по заказу {str(code)[:80]}. Спасибо за покупку!",
         "json_tradeoffer": json.dumps(tradeoffer_json),
         "captcha": "",
         "trade_offer_create_params": json.dumps({"trade_offer_access_token": token})
     }
 
     try:
-        r = requests.post("https://steamcommunity.com/tradeoffer/new/send", data=form_data, cookies=cookies, headers=headers, timeout=20)
-        res_json = r.json()
-    except Exception as e:
-        return False, f"Ошибка запроса к Steam: {e}"
+        response = requests.post(
+            "https://steamcommunity.com/tradeoffer/new/send",
+            data=form_data, cookies=cookies, headers=headers, timeout=20
+        )
+    except requests.RequestException as exc:
+        # A read timeout can happen after Steam has already created the offer.
+        # Quarantine the items and do not automatically repeat the POST.
+        return "unknown", f"Связь со Steam прервалась ({type(exc).__name__}); результат неясен.", None
 
+    if response.status_code >= 500:
+        return "unknown", f"Steam вернул HTTP {response.status_code}; результат создания предложения неясен.", None
+    try:
+        res_json = response.json()
+    except (ValueError, requests.RequestException):
+        if response.status_code >= 400:
+            return "failed", f"Steam отклонил запрос (HTTP {response.status_code}).", None
+        return "unknown", "Steam вернул непонятный ответ; результат создания предложения неясен.", None
+
+    if response.status_code >= 400 or not isinstance(res_json, dict):
+        return "failed", f"Steam отклонил запрос (HTTP {response.status_code}).", None
     if "tradeofferid" not in res_json:
-        return False, f"Steam отклонил обмен (проверьте, открыт ли инвентарь в настройках приватности): {res_json.get('strError', res_json)}"
+        error_text = str(res_json.get("strError") or "Steam не вернул ID предложения")[:240]
+        return "failed", f"Steam отклонил обмен: {error_text}", None
 
-    offer_id = res_json["tradeofferid"]
+    offer_id = str(res_json["tradeofferid"])
     time.sleep(2)
-    asf_command(f"2faok {STEAM_LOGIN}")
-    return True, f"Трейд #{offer_id} отправлен и подтвержден в ASF"
+    confirmation_ok, confirmation_message = asf_command(f"2faok {STEAM_LOGIN}")
+    if confirmation_ok:
+        return "sent", f"Предложение Steam #{offer_id} создано; ASF подтвердил запрос подтверждения.", offer_id
+    return (
+        "created_unconfirmed",
+        f"Предложение Steam #{offer_id} уже создано, но ASF не подтвердил автоматическое подтверждение: {str(confirmation_message)[:180]}. Повторно не отправлять.",
+        offer_id,
+    )
+
 
 def execute_delivery(chat_id, code, trade_url, db):
-    # pyTelegramBotAPI handles updates in multiple threads. Serialize delivery
-    # transactions and re-read the code under the lock to prevent duplicate trades.
+    # Serialize a delivery transaction and re-read the code under the lock.
     with delivery_lock:
         current_db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
         voucher = current_db.get("vouchers", {}).get(code)
         if not isinstance(voucher, dict) or voucher.get("used"):
             bot.send_message(chat_id, "❌ Этот пин-код не найден или уже был активирован ранее!")
             return False
+        if voucher.get("delivery_state") in {"sending", "uncertain"}:
+            bot.send_message(
+                chat_id,
+                "⚠️ Результат предыдущей попытки обмена не подтверждён. Код временно заблокирован, "
+                "чтобы не отправить карточки повторно. Администратор должен проверить историю Steam."
+            )
+            return False
         return _execute_delivery_locked(chat_id, code, trade_url, current_db)
 
 
 def _execute_delivery_locked(chat_id, code, trade_url, db):
-    sets_needed = db["vouchers"][code]["sets"]
-    platform_tag = db["vouchers"][code].get("platform", "funpay").upper()
-    bot.send_message(chat_id, f"🔄 Код `{code}` проверен! Собираю **{sets_needed} полных сет(ов)** и отправляю трейд...", parse_mode="Markdown")
+    voucher = db["vouchers"][code]
+    sets_needed = voucher["sets"]
+    platform_tag = voucher.get("platform", "funpay").upper()
+    bot.send_message(chat_id, f"Код {code} проверен! Собираю {sets_needed} полных сет(ов) и отправляю трейд...")
 
     selected_assets, cache_bundle, err = pick_cards_for_sets(sets_needed)
     if err:
         bot.send_message(chat_id, f"❌ {err}")
-        return
+        return False
 
     updated_cache, picked_games_info, _asset_locations = cache_bundle
-    ok, result_msg = send_trade_offer(trade_url, selected_assets, code)
+    # Persist the exact assets before the network request so a timeout/restart
+    # cannot make them appear available for another order.
+    voucher["delivery_state"] = "sending"
+    voucher["reserved_asset_ids"] = list(selected_assets)
+    save_json(DB_FILE, db)
 
-    if not ok:
+    outcome, result_msg, offer_id = send_trade_offer(trade_url, selected_assets, code)
+    if outcome == "unknown":
+        voucher["delivery_state"] = "uncertain"
+        voucher["delivery_error"] = result_msg[:300]
+        save_json(DB_FILE, db)
         bot.send_message(
             chat_id,
-            f"⚠️ **Не удалось отправить обмен (ваш пин-код НЕ сгорел!):**\n`{result_msg}`\n\n"
-            f"Проверьте настройки приватности инвентаря Steam и отправьте правильную трейд-ссылку еще раз.",
-            parse_mode="Markdown"
+            "⚠️ Запрос к Steam завершился с неопределённым результатом. Код временно заблокирован, "
+            "чтобы не отправить обмен дважды. Администратор должен проверить историю предложений Steam."
+        )
+        pending_customer_codes.pop(chat_id, None)
+        return False
+
+    if outcome == "failed":
+        voucher["delivery_state"] = "failed"
+        voucher.pop("reserved_asset_ids", None)
+        voucher["delivery_error"] = result_msg[:300]
+        save_json(DB_FILE, db)
+        bot.send_message(
+            chat_id,
+            f"⚠️ Steam не создал предложение (код не использован):\n{result_msg}\n\n"
+            "Проверьте настройки приватности инвентаря Steam и отправьте корректную трейд-ссылку ещё раз."
         )
         pending_customer_codes[chat_id] = code
-        return
+        return False
 
-    db["vouchers"][code]["used"] = True
-    db["vouchers"][code]["used_at"] = int(time.time())
+    voucher["used"] = True
+    voucher["used_at"] = int(time.time())
+    voucher["trade_offer_id"] = str(offer_id)
+    voucher["delivery_state"] = outcome
+    voucher.pop("delivery_error", None)
     save_json(DB_FILE, db)
+    apply_reserved_assets_to_cache(updated_cache, vouchers=db.get("vouchers", {}))
     save_json(CACHE_FILE, updated_cache)
     pending_customer_codes.pop(chat_id, None)
 
     games_str = ", ".join(picked_games_info)
-    bot.send_message(
-        chat_id,
-        f"✅ **Обмен успешно отправлен и подтвержден!**\n"
-        f"📦 Выданные наборы: **{games_str}** (всего карточек: {len(selected_assets)} шт.)\n\n"
-        f"👉 Перейдите в Steam, примите входящий обмен и не забудьте подтвердить заказ и оставить отзыв на сайте ⭐️",
-        parse_mode="Markdown"
-    )
+    if outcome == "sent":
+        customer_text = (
+            f"✅ Предложение Steam #{offer_id} создано и подтверждение ASF обработано.\n"
+            f"📦 Наборы: {games_str} (карточек: {len(selected_assets)} шт.)\n\n"
+            "Откройте Steam и проверьте входящее предложение."
+        )
+    else:
+        customer_text = (
+            f"⚠️ Предложение Steam #{offer_id} создано, но автоматическое подтверждение не завершилось.\n"
+            f"📦 Наборы: {games_str} (карточек: {len(selected_assets)} шт.)\n\n"
+            "Не отправляйте код повторно. Проверьте Steam и при необходимости обратитесь к продавцу."
+        )
+    bot.send_message(chat_id, customer_text)
 
     if db.get("admin_id"):
         rem_sets, _ = count_available_sets(updated_cache)
         stock_warning = ""
         if rem_sets < 5:
-            stock_warning = "\n🚨 **Критический остаток:** меньше 5 полных сетов. Обнови склад и проверь запас."
+            stock_warning = "\n🚨 Критический остаток: меньше 5 полных сетов. Обнови склад и проверь запас."
         elif rem_sets < 10:
-            stock_warning = "\n⚠️ **Низкий остаток:** меньше 10 полных сетов. Проверь запас."
+            stock_warning = "\n⚠️ Низкий остаток: меньше 10 полных сетов. Проверь запас."
+        label = "создано" if outcome == "sent" else "создано, подтверждение требует проверки"
         bot.send_message(
             db["admin_id"],
-            f"💰 **Успешная автовыдача ({platform_tag})!**\n"
+            f"💰 Предложение Steam {label} ({platform_tag})!\n"
             f"Код: {code}\n"
-            "Получатель: [трейд-ссылка скрыта]\n"
+            f"ID предложения: {offer_id}\n"
             f"Отправлено: {games_str}\n"
-            f"Остаток в кэше: **{rem_sets} полных сетов**" + stock_warning,
-            parse_mode="Markdown"
+            f"Остаток доступных сетов: {rem_sets}" + stock_warning
         )
+    return True
+
 
 # --- КЛАВИАТУРЫ ---
 
