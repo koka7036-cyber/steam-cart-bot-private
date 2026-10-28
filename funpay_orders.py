@@ -16,17 +16,15 @@ OPEN_STATUSES = {"awaiting_input", "input_received", "reserved", "review"}
 
 
 STEAM_TRADE_URL_RE = re.compile(
-    r"https?://steamcommunity\\.com/tradeoffer/new/\\?[^\\s<>\\\"']+",
+    r"https?://steamcommunity\.com/tradeoffer/new/\?[^\s<>\"']+",
     re.IGNORECASE,
 )
-
-
 def extract_steam_trade_url(text: str) -> str | None:
     """Extract one Steam trade URL from plain text; reject ambiguous or malformed input."""
     matches = STEAM_TRADE_URL_RE.findall(text or "")
     normalized = []
     for candidate in matches:
-        candidate = candidate.rstrip(".,;:!?)\\]}")
+        candidate = candidate.rstrip(".,;:!?)]}")
         parsed = __import__("urllib.parse", fromlist=["urlparse", "parse_qs"])
         url = parsed.urlparse(candidate)
         query = parsed.parse_qs(url.query)
