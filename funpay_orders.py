@@ -293,6 +293,42 @@ def filter_reserved_assets(cache_data: dict, orders: dict | None = None,
     return filtered
 
 
+def funpay_cold_start_blockers(orders: dict) -> list[tuple[str, str]]:
+    """Return unresolved FunPay orders that must stay in the journal to protect reservations."""
+    blockers = []
+    if not isinstance(orders, dict):
+        return [("unknown", "invalid_ledger")]
+    for key, record in orders.items():
+        if not isinstance(record, dict):
+            blockers.append((str(key), "invalid_record"))
+            continue
+        status = str(record.get("status", "unknown"))
+        if status not in {"completed", "cancelled"} or record.get("reservation"):
+            blockers.append((str(key), status))
+    return blockers
+
+
+def inventory_cache_freshness_error(cache_data: dict, now: float | None = None,
+                                    max_age_seconds: int = 6 * 60 * 60) -> str | None:
+    """Fail closed when available-card counts come from a missing, future or stale cache."""
+    if not isinstance(cache_data, dict):
+        return "Кэш склада повреждён. Обнови кэш склада перед выдачей."
+    updated_at = cache_data.get("updated_at")
+    if not isinstance(updated_at, (int, float)) or isinstance(updated_at, bool) or updated_at <= 0:
+        return "У кэша склада нет достоверного времени обновления. Нажми «🔄 Обновить кэш склада»."
+    current_time = time.time() if now is None else float(now)
+    age = current_time - float(updated_at)
+    if age < -300:
+        return "Время кэша склада выглядит некорректным. Обнови кэш склада перед выдачей."
+    if age > max_age_seconds:
+        hours = age / 3600
+        return (
+            f"Кэш склада устарел ({hours:.1f} ч). Выдача остановлена, чтобы не использовать "
+            "устаревшие asset ID. Нажми «🔄 Обновить кэш склада»."
+        )
+    return None
+
+
 def is_funpay_system_message(html_fragment: str) -> bool:
     """Trust payment text only inside FunPay's alert block used for system-authored messages."""
     if not html_fragment:
