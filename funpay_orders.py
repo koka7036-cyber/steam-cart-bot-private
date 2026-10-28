@@ -11,7 +11,7 @@ import html
 import re
 import time
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 
 OPEN_STATUSES = {"awaiting_input", "input_received", "reserved", "review", "retry_required"}
@@ -33,7 +33,7 @@ def extract_steam_trade_url(text: str) -> str | None:
     for candidate in candidates:
         candidate = candidate.rstrip(".,;:!?)]}\"'")
         parsed = urlparse(candidate)
-        query = __import__("urllib.parse", fromlist=["parse_qs"]).parse_qs(parsed.query)
+        query = parse_qs(parsed.query)
         if (
             parsed.scheme == "https"
             and parsed.hostname == "steamcommunity.com"
