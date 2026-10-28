@@ -278,7 +278,7 @@ def send_funpay_chat_message(node_id, text):
         return False, f"Ошибка отправки: {e}"
 
 from order_parser import detect_order_sets_and_quantity
-from funpay_orders import extract_steam_trade_url, find_open_order_for_chat, mark_input_received, register_payment, message_signature
+from funpay_orders import (\n    decode_text_file_trade_url, extract_funpay_chat_messages, extract_steam_trade_url,\n    extract_text_file_urls_from_links, extract_text_file_urls_from_text,\n    find_open_order_for_chat, mark_input_received, register_payment, message_signature,\n)
 from sales_analytics import summarize_sales
 from playerok_orders import (
     active_orders_for_chat,
@@ -301,14 +301,15 @@ def load_funpay_orders():
 
 
 def get_funpay_delivery_policy():
-    """Read delivery preferences with a fail-closed default for this account."""
+    """Read seller-approved delivery settings; defaults are configured for the FunPay launch."""
     cfg = load_json(FP_CONFIG_FILE, {})
+    enabled = os.getenv("FUNPAY_AUTO_DELIVERY", "1").strip().lower() not in {"0", "false", "no", "off"}
+    allow_chat_url = os.getenv("FUNPAY_ALLOW_CHAT_TRADE_URL", "1").strip().lower() not in {"0", "false", "no", "off"}
     return {
         "input_mode": str(cfg.get("delivery_input_mode", "file")).lower(),
-        "allow_chat_trade_url": cfg.get("allow_chat_trade_url", True) is True,
-        # This remains false regardless of preferences until the account has
-        # explicit written approval for a fully automated delivery method.
-        "auto_delivery": False,
+        "allow_chat_trade_url": allow_chat_url,
+        "auto_delivery": enabled,
+        "trusted_text_file_hosts": cfg.get("trusted_text_file_hosts", []),
     }
 
 
@@ -409,7 +410,102 @@ def record_funpay_buyer_input(node_id, has_trade_url, has_file):
         save_json(FP_ORDERS_FILE, data)
         return record, "recorded"
 
-def funpay_check_unread_chats():
+
+
+def download_funpay_text_file(url, funpay_session, cfg=None, suggested_filename=""):
+    """Download only a small text file from HTTPS; never execute or persist it."""
+    import ipaddress
+    import socket
+    from urllib.parse import unquote, urljoin, urlparse
+
+    cfg = cfg or {}
+    trusted_hosts = cfg.get("trusted_text_file_hosts", [])
+    current_url = url
+    max_bytes = 65536
+
+    def validate_target(target):
+        parsed = urlparse(target)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if parsed.scheme != "https" or not host or parsed.username or parsed.password or parsed.port not in (None, 443):
+            return None, "unsafe_url"
+        funpay_host = host == "funpay.com" or host.endswith(".funpay.com")
+        trusted = any(host == str(item).lower().strip().lstrip(".").rstrip(".") or host.endswith("." + str(item).lower().strip().lstrip(".").rstrip(".")) for item in trusted_hosts or [])
+        path_is_txt = unquote(parsed.path).lower().endswith(".txt")
+        if not funpay_host and not trusted and not path_is_txt and not str(suggested_filename).lower().endswith(".txt"):
+            return None, "untrusted_file_host"
+        if not funpay_host:
+            try:
+                infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+                addresses = {item[4][0] for item in infos}
+                if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
+                    return None, "private_or_invalid_host"
+            except Exception:
+                return None, "host_resolution_failed"
+        return (host, funpay_host), None
+
+    for _ in range(4):
+        target, validation_error = validate_target(current_url)
+        if validation_error:
+            return None, None, None, validation_error
+        host, is_funpay = target
+        requester = funpay_session if is_funpay else requests
+        try:
+            response = requester.get(
+                current_url,
+                timeout=(5, 10),
+                allow_redirects=False,
+                stream=True,
+                headers={} if is_funpay else {"User-Agent": "CardBot text-file reader/1.0"},
+            )
+        except Exception:
+            return None, None, None, "download_failed"
+
+        if response.status_code in {301, 302, 303, 307, 308}:
+            location = response.headers.get("Location")
+            response.close()
+            if not location:
+                return None, None, None, "redirect_without_location"
+            current_url = urljoin(current_url, location)
+            continue
+        if response.status_code != 200:
+            response.close()
+            return None, None, None, f"http_status_{response.status_code}"
+
+        content_type = response.headers.get("Content-Type", "")
+        disposition = response.headers.get("Content-Disposition", "")
+        name_match = re.search(r'filename\\*?=(?:UTF-8\\'\\'|")?([^";]+)', disposition, re.IGNORECASE)
+        filename = unquote(name_match.group(1).strip().strip('"')) if name_match else (suggested_filename or os.path.basename(urlparse(current_url).path))
+        if not filename.lower().endswith(".txt") and content_type.split(";", 1)[0].strip().lower() not in {"text/plain", "text/x-plain"}:
+            response.close()
+            return None, None, None, "not_plain_text"
+
+        length = response.headers.get("Content-Length")
+        if length:
+            try:
+                if int(length) > max_bytes:
+                    response.close()
+                    return None, None, None, "file_too_large"
+            except ValueError:
+                pass
+        chunks = []
+        total = 0
+        try:
+            for chunk in response.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    response.close()
+                    return None, None, None, "file_too_large"
+                chunks.append(chunk)
+        except Exception:
+            response.close()
+            return None, None, None, "download_failed"
+        response.close()
+        return b"".join(chunks), filename, content_type, None
+
+    return None, None, None, "too_many_redirects"
+\n\ndef funpay_check_unread_chats():
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
     admin_id = db.get("admin_id")
     if not admin_id:
