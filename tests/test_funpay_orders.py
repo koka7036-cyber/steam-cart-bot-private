@@ -135,3 +135,11 @@ def test_extract_steam_trade_url_rejects_ambiguous_multiple_links():
     a = "https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc"
     b = "https://steamcommunity.com/tradeoffer/new/?partner=456&token=def"
     assert extract_steam_trade_url(a + "\\n" + b) is None
+
+
+def test_alphanumeric_funpay_order_number_is_preserved():
+    from funpay_orders import extract_order_number, payment_key
+    text = "Заказ #DCQQQ6U7H оплачен"
+    assert extract_order_number(text) == "DCQQQ6U7H"
+    assert payment_key("297759975", text) == "fp-order-DCQQQ6U7H"
+
