@@ -326,7 +326,7 @@ def migrate_funpay_delivery_config():
 
 
 def recover_interrupted_funpay_deliveries():
-    """Quarantine transactions interrupted while the Steam request may have been in flight."""
+    """Quarantine interrupted Steam requests; never retry an ambiguous POST."""
     changed_keys = []
     with funpay_orders_lock:
         data = load_funpay_orders()
@@ -340,15 +340,25 @@ def recover_interrupted_funpay_deliveries():
                 changed_keys.append(key)
         if changed_keys:
             save_json(FP_ORDERS_FILE, data)
-    if changed_keys:
-        db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
-        if db.get("admin_id"):
-            bot.send_message(
-                db["admin_id"],
-                "⚠️ После перезапуска обнаружены заказы с неопределённым результатом Steam: "
-                + ", ".join(changed_keys[:8])
-                + ". Проверь эти предложения в Steam вручную. Автоматический повтор заблокирован."
-            )
+
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    voucher_changes = False
+    for code, voucher in db.get("vouchers", {}).items():
+        if isinstance(voucher, dict) and voucher.get("delivery_state") == "sending":
+            voucher["delivery_state"] = "uncertain"
+            voucher["delivery_error"] = "Бот перезапустился во время запроса; проверь историю Steam вручную."
+            voucher_changes = True
+            changed_keys.append(f"код {code}")
+    if voucher_changes:
+        save_json(DB_FILE, db)
+
+    if changed_keys and db.get("admin_id"):
+        bot.send_message(
+            db["admin_id"],
+            "⚠️ После перезапуска обнаружены операции с неопределённым результатом Steam: "
+            + ", ".join(changed_keys[:8])
+            + ". Проверь историю предложений Steam вручную. Автоматический повтор заблокирован."
+        )
 
 
 def restore_reservation_to_cache(reservation):
@@ -863,6 +873,13 @@ def funpay_check_unread_chats():
     except Exception:
         logging.exception("Ошибка проверки непрочитанных чатов FunPay")
 def funpay_background_worker():
+    # The owner explicitly approved this custom chat-based fulfillment workflow.
+    # It does not activate FunPay's built-in "Automatic delivery" field or send external links.
+    try:
+        migrate_funpay_delivery_config()
+        recover_interrupted_funpay_deliveries()
+    except Exception:
+        logging.exception("Не удалось инициализировать безопасный процесс выдачи FunPay")
     last_ping_time = 0
     while True:
         try:
@@ -1006,7 +1023,18 @@ def update_inventory_cache():
         games.setdefault(game_name, {}).setdefault(card_name, []).append(str(asset["assetid"]))
 
     cache_data = {"updated_at": time.time(), "total_cards": total_cards, "games": games}
-    save_json(CACHE_FILE, cache_data)
+    # Steam keeps items in inventory while a trade offer is pending. Exclude every
+    # asset held by a pending/uncertain offer so the next refresh cannot sell it twice.
+    with funpay_orders_lock:
+        order_data = load_funpay_orders()
+        db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+        with delivery_lock:
+            cache_data = apply_reserved_assets_to_cache(
+                cache_data,
+                orders=order_data.get("orders", {}),
+                vouchers=db.get("vouchers", {}),
+            )
+            save_json(CACHE_FILE, cache_data)
     return cache_data, None
 
 def count_available_sets(cache_data):
@@ -1695,6 +1723,12 @@ def funpay_release_cmd(message):
         if not isinstance(record, dict):
             bot.send_message(message.chat.id, "❌ Заказ не найден.")
             return
+        if record.get("status") in {"sending", "delivery_uncertain", "offer_sent", "offer_pending_confirmation", "completed"} or record.get("steam_trade_offer_id"):
+            bot.send_message(
+                message.chat.id,
+                "❌ У заказа есть или могло быть создано предложение Steam. Используй /fpofferresolve КЛЮЧ accepted|returned после проверки истории Steam."
+            )
+            return
         if record.get("status") == "delivered":
             bot.send_message(message.chat.id, "❌ Нельзя снять резерв с уже выданного заказа.")
             return
@@ -1750,10 +1784,12 @@ def set_fp_key(message):
     config = load_json(FP_CONFIG_FILE, {})
     config["golden_key"] = key
     config["last_raise_ts"] = 0
-    # A direct chat URL is deliberately disabled unless FunPay explicitly
-    # confirms it for this account and product category.
-    config.setdefault("delivery_input_mode", "file")
-    config.setdefault("allow_chat_trade_url", False)
+    # The owner selected the in-chat link + text-file workflow for this custom bot.
+    # Buyers are never directed to Telegram or an external file-hosting service.
+    config["delivery_input_mode"] = "both"
+    config["allow_chat_trade_url"] = True
+    config["auto_delivery_funpay"] = True
+    config["funpay_workflow_version"] = 2
     save_json(FP_CONFIG_FILE, config)
     bot.send_message(message.chat.id, "⏳ Проверяю ключ `golden_key` на FunPay...", parse_mode="Markdown")
     ok, msg = funpay_ping_and_raise(force_raise=True)
@@ -1761,7 +1797,7 @@ def set_fp_key(message):
         bot.send_message(
             message.chat.id,
             f"✅ **FunPay подключен.** (ID: `{fp_state['user_id']}`)\n"
-            "Выдача и внешние ссылки в чат отключены защитой модерации.",
+            "Автоматизация обрабатывает ссылку из чата или текстовое вложение; внешние ссылки покупателям не отправляются.",
             reply_markup=build_admin_keyboard(),
             parse_mode="Markdown"
         )
