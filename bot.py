@@ -304,7 +304,7 @@ def get_funpay_delivery_policy():
     """Read delivery preferences with a fail-closed default for this account."""
     cfg = load_json(FP_CONFIG_FILE, {})
     return {
-        "input_mode": str(cfg.get("delivery_input_mode", "file")).lower(),
+        "input_mode": str(cfg.get("delivery_input_mode", "chat")).lower(),
         "allow_chat_trade_url": cfg.get("allow_chat_trade_url", True) is True,
         # This remains false regardless of preferences until the account has
         # explicit written approval for a fully automated delivery method.

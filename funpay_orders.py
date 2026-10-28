@@ -42,7 +42,7 @@ def extract_steam_trade_url(text: str) -> str | None:
 
 def extract_order_number(text: str) -> str | None:
     """Extract the visible FunPay order number when it is present in a message."""
-    match = re.search(r"(?:заказ|order)\s*[№#]?\s*(\d{4,})", text or "", re.IGNORECASE)
+    match = re.search(r"(?:заказ|order)\s*[№#]?\s*([A-Z0-9-]{4,})", text or "", re.IGNORECASE)
     return match.group(1) if match else None
 
 
