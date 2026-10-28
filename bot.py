@@ -277,7 +277,7 @@ def send_funpay_chat_message(node_id, text):
         logging.exception("Ошибка отправки сообщения в FunPay, node=%s", node_id)
         return False, f"Ошибка отправки: {e}"
 
-from order_parser import detect_order_sets_and_quantity
+from order_parser import detect_order_sets_and_quantity, is_paid_order_notification
 from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, mark_input_received, register_payment, message_signature)
 from sales_analytics import summarize_sales
 from playerok_orders import (
@@ -636,11 +636,15 @@ def funpay_check_unread_chats():
         # Migrate old raw preview signatures to hashes so local config no longer
         # retains message text (which could include a trade URL).
         for old_node, old_signature in list(seen_msgs.items()):
-            if isinstance(old_signature, str) and old_signature.startswith("sha256:"):
+            if isinstance(old_signature, str) and old_signature.startswith("sha256:v2:"):
                 continue
-            if isinstance(old_signature, str) and ":" in old_signature:
+            if isinstance(old_signature, str) and old_signature.startswith("sha256:"):
+                # Older signature format included UI state and used a different digest.
+                # Preserve only the hash and baseline read chats during migration.
+                seen_msgs[old_node] = "legacy:" + old_signature
+            elif isinstance(old_signature, str) and ":" in old_signature:
                 old_sender, old_preview = old_signature.split(":", 1)
-                seen_msgs[old_node] = "sha256:" + message_signature(old_sender, old_preview)
+                seen_msgs[old_node] = "legacy:" + message_signature(old_sender, old_preview)
             else:
                 seen_msgs.pop(old_node, None)
             changed = True
@@ -656,7 +660,18 @@ def funpay_check_unread_chats():
             sender_name = html.unescape(name_m.group(1).strip()) if name_m else f"Диалог {node_id}"
             msg_m = re.search(r'<div class="contact-item-message">([\s\S]*?)</div>', b)
             msg_preview = html.unescape(re.sub(r'<[^>]+>', '', msg_m.group(1)).strip()) if msg_m else ""
-            sig = "sha256:" + message_signature(sender_name, msg_preview + "|" + b)
+            signature_block = re.sub(
+                r'class=(["\'])(.*?)\1',
+                lambda match: 'class=' + match.group(1) + " ".join(
+                    token for token in match.group(2).split()
+                    if token.lower() not in {"unread", "active", "selected"}
+                ) + match.group(1),
+                b,
+                flags=re.IGNORECASE,
+            )
+            sig = "sha256:v2:" + message_signature(
+                sender_name, msg_preview + "|" + signature_block
+            )
 
             # On first start, remember only already-read chats. Unread chats
             # are processed normally so paid orders are not skipped.
@@ -665,10 +680,22 @@ def funpay_check_unread_chats():
                 changed = True
                 continue
 
-            if "unread" not in classes or seen_msgs.get(node_id) == sig:
-                if "unread" not in classes and node_id not in seen_msgs:
-                    seen_msgs[node_id] = sig
-                    changed = True
+            previous_sig = seen_msgs.get(node_id)
+            # Upgrade old hashes without reprocessing historical read chats. Keep
+            # unread chats eligible so a paid order isn't skipped during migration.
+            if not str(previous_sig or "").startswith("sha256:v2:") and "unread" not in classes:
+                seen_msgs[node_id] = sig
+                changed = True
+                continue
+
+            if previous_sig == sig:
+                continue
+
+            # A known chat can become read before this poll runs. Process changed
+            # message previews even when the chat is no longer marked unread.
+            if node_id not in seen_msgs and "unread" not in classes:
+                seen_msgs[node_id] = sig
+                changed = True
                 continue
 
             # Do not acknowledge an unread message until its detail page was
@@ -709,16 +736,25 @@ def funpay_check_unread_chats():
                 continue
 
             lower_txt = full_text.lower()
-            is_order_payment = (
-                "оплатил" in lower_txt or "создан заказ" in lower_txt or
-                "переведите" in lower_txt or "заказ #" in lower_txt or
-                bool(re.search(r"\bзаказ\s*#?\d+", lower_txt))
-            )
+            is_order_payment = is_paid_order_notification(full_text)
             sets_per_item, order_quantity = detect_order_sets_and_quantity(full_text)
             mentions_product = any(term in lower_txt for term in
                                     ("карт", "сет", "level", "уровень", "steam", "карточ"))
 
-            if is_order_payment and mentions_product and sets_per_item in (1, 5):
+            chat_page_url = f"https://funpay.com/chat/?node={node_id}"
+            trade_url = extract_steam_trade_url(full_text)
+            contains_trade_url = "steamcommunity.com/tradeoffer/new" in lower_txt
+            attachment_href = extract_text_attachment_href(last_message_html, chat_page_url)
+            has_file = bool(attachment_href or re.search(
+                r"(?:chat-msg-(?:file|attachment)|data-type=['\"]attachment['\"])",
+                last_message_html, re.IGNORECASE
+            ) or re.search(r"\b(?:файл|вложение|attachment)\b", msg_preview, re.IGNORECASE))
+            is_buyer_input = bool(trade_url or contains_trade_url or attachment_href or has_file)
+
+            # User-submitted links/files take precedence over broad payment wording.
+            # This prevents a buyer writing "I paid for 1 set, here's my link" from
+            # being mistaken for a new payment notification.
+            if is_order_payment and not is_buyer_input and mentions_product and sets_per_item in (1, 5):
                 record, created = register_funpay_payment(
                     node_id, sender_name, full_text, sets_per_item, order_quantity
                 )
@@ -734,15 +770,6 @@ def funpay_check_unread_chats():
                         f"Ожидается Steam trade-ссылка в чате или текстовый файл."
                     )
             else:
-                chat_page_url = f"https://funpay.com/chat/?node={node_id}"
-                trade_url = extract_steam_trade_url(full_text)
-                contains_trade_url = "steamcommunity.com/tradeoffer/new" in full_text.lower()
-                attachment_href = extract_text_attachment_href(last_message_html, chat_page_url)
-                has_file = bool(attachment_href or re.search(
-                    r"(?:chat-msg-(?:file|attachment)|data-type=['\"]attachment['\"])",
-                    last_message_html, re.IGNORECASE
-                ) or re.search(r"\b(?:файл|вложение|attachment)\b", msg_preview, re.IGNORECASE))
-
                 input_kind = "chat_trade_url"
                 input_error = None
                 if trade_url:
@@ -1050,7 +1077,7 @@ def pick_cards_for_sets(sets_needed):
         if unique_count < 5:
             continue
         available_here = min(len(aids) for aids in cards_dict.values())
-        take_sets = min(available_here, sets_needed, 5)
+        take_sets = min(available_here, sets_needed)
         if take_sets > 0:
             for _ in range(take_sets):
                 for card_name in cards_dict:
