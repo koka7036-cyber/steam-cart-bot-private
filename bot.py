@@ -278,7 +278,7 @@ def send_funpay_chat_message(node_id, text):
         return False, f"Ошибка отправки: {e}"
 
 from order_parser import detect_order_sets_and_quantity, is_paid_order_notification
-from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, funpay_cold_start_blockers, inventory_cache_freshness_error, is_funpay_system_message, mark_input_received, register_payment, message_signature)
+from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, funpay_cold_start_blockers, inventory_cache_freshness_error, is_funpay_system_message, mark_input_received, register_payment, message_signature, voucher_reset_block_reason)
 from sales_analytics import summarize_sales
 from playerok_orders import (
     active_orders_for_chat,
@@ -1642,13 +1642,29 @@ def reset_voucher_cmd(message):
         bot.send_message(message.chat.id, "Использование: `/reset SET1-XXXXXX`", parse_mode="Markdown")
         return
     code = parts[1].strip().upper()
-    if code in db["vouchers"]:
-        db["vouchers"][code]["used"] = False
-        db["vouchers"][code]["sent_to_fp"] = False
-        save_json(DB_FILE, db)
-        bot.send_message(message.chat.id, f"✅ Код `{code}` снова полностью активен!", parse_mode="Markdown")
-    else:
+    voucher = db.get("vouchers", {}).get(code)
+    if not isinstance(voucher, dict):
         bot.send_message(message.chat.id, f"❌ Код `{code}` не найден в базе.", parse_mode="Markdown")
+        return
+
+    reset_block = voucher_reset_block_reason(voucher)
+    if reset_block:
+        bot.send_message(
+            message.chat.id,
+            f"⛔ Код `{code}` не сброшен. {reset_block}",
+            parse_mode="Markdown",
+        )
+        return
+
+    voucher["used"] = False
+    voucher["sent_to_fp"] = False
+    voucher.pop("used_at", None)
+    voucher.pop("delivery_error", None)
+    if voucher.get("delivery_state") == "failed":
+        voucher.pop("delivery_state", None)
+        voucher.pop("reserved_asset_ids", None)
+    save_json(DB_FILE, db)
+    bot.send_message(message.chat.id, f"✅ Код `{code}` сброшен. Проверки повторной выдачи сохранены.", parse_mode="Markdown")
 
 
 @bot.message_handler(commands=["fpcoldstart"])
