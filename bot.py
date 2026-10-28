@@ -362,23 +362,27 @@ def recover_interrupted_funpay_deliveries():
 
 
 def restore_reservation_to_cache(reservation):
-    """Put only a cancelled reservation back into the local inventory cache."""
+    """Restore a reservation only after verified cancellation/return of the Steam offer."""
     locations = reservation.get("asset_locations", []) if isinstance(reservation, dict) else []
     if not locations:
         return False
-    cache = load_json(CACHE_FILE, {})
-    games = cache.get("games", {})
-    for item in locations:
-        game = item.get("game")
-        card = item.get("card")
-        asset_id = str(item.get("asset_id", ""))
-        if not game or not card or not asset_id:
-            continue
-        game_cards = games.setdefault(game, {})
-        card_assets = game_cards.setdefault(card, [])
-        if asset_id not in card_assets:
-            card_assets.append(asset_id)
-    save_json(CACHE_FILE, cache)
+    with delivery_lock:
+        cache = load_json(CACHE_FILE, {})
+        games = cache.get("games", {})
+        for item in locations:
+            game = item.get("game")
+            card = item.get("card")
+            asset_id = str(item.get("asset_id", ""))
+            if not game or not card or not asset_id:
+                continue
+            game_cards = games.setdefault(game, {})
+            card_assets = game_cards.setdefault(card, [])
+            if asset_id not in card_assets:
+                card_assets.append(asset_id)
+        cache["total_cards"] = sum(
+            len(asset_ids) for cards in games.values() for asset_ids in cards.values()
+        )
+        save_json(CACHE_FILE, cache)
     return True
 
 
@@ -614,7 +618,7 @@ def apply_reserved_assets_to_cache(cache_data, orders=None, vouchers=None):
             if not isinstance(voucher, dict):
                 continue
             state = voucher.get("delivery_state")
-            if state in {"uncertain", "sent", "created_unconfirmed"} or (
+            if state in {"sending", "uncertain", "sent", "created_unconfirmed"} or (
                 voucher.get("used") and voucher.get("trade_offer_id")
             ):
                 reserved_ids.update(str(aid) for aid in voucher.get("reserved_asset_ids", []) if str(aid))
@@ -1706,6 +1710,67 @@ def funpay_orders_cmd(message):
     bot.send_message(message.chat.id, "\n".join(lines), parse_mode="Markdown")
 
 
+@bot.message_handler(commands=["fpofferresolve"])
+def funpay_offer_resolve_cmd(message):
+    """Manually reconcile an offer only after its real status was checked in Steam."""
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    if message.chat.id != db.get("admin_id") or message.from_user.id != db.get("admin_id"):
+        return
+    parts = (message.text or "").strip().split()
+    if len(parts) != 3 or parts[2].lower() not in {"accepted", "returned"}:
+        bot.send_message(
+            message.chat.id,
+            "Использование: /fpofferresolve КЛЮЧ accepted|returned\\n"
+            "Команда допустима только после ручной проверки истории предложения в Steam."
+        )
+        return
+
+    key, resolution = parts[1], parts[2].lower()
+    with funpay_orders_lock:
+        data = load_funpay_orders()
+        record = data["orders"].get(key)
+        if not isinstance(record, dict):
+            bot.send_message(message.chat.id, "❌ Заказ не найден.")
+            return
+        if record.get("status") not in {
+            "offer_sent", "offer_pending_confirmation", "delivery_uncertain", "sending"
+        }:
+            bot.send_message(message.chat.id, "❌ У заказа нет предложения, которое нужно сверить.")
+            return
+        if resolution == "accepted":
+            record["reservation"] = None
+            record["status"] = "completed"
+            record["resolved_at"] = int(time.time())
+            record.setdefault("notes", []).append(
+                "Администратор подтвердил принятие предложения в Steam."
+            )
+            result_text = "✅ Заказ отмечен завершённым. Карточки обратно в склад не возвращались."
+        else:
+            reservation = record.get("reservation")
+            if not isinstance(reservation, dict) or not reservation.get("asset_locations"):
+                bot.send_message(
+                    message.chat.id,
+                    "❌ У заказа нет полного резерва. Автоматическое восстановление невозможно; нужна ручная сверка склада."
+                )
+                return
+            restored = restore_reservation_to_cache(reservation)
+            if not restored:
+                bot.send_message(message.chat.id, "❌ Не удалось восстановить резерв; данные заказа не изменены.")
+                return
+            record["reservation"] = None
+            record.pop("steam_trade_offer_id", None)
+            record["steam_offer_confirmed"] = False
+            record["status"] = "retry_required"
+            record["resolved_at"] = int(time.time())
+            record.setdefault("notes", []).append(
+                "Администратор подтвердил, что предложение отменено/отклонено/истекло и карточки вернулись в инвентарь."
+            )
+            result_text = "✅ Резерв восстановлен. Заказ ждёт новую trade-ссылку/текстовый файл."
+        record["updated_at"] = int(time.time())
+        save_json(FP_ORDERS_FILE, data)
+    bot.send_message(message.chat.id, result_text)
+
+
 @bot.message_handler(commands=["fprelease"])
 def funpay_release_cmd(message):
     """Release an undelivered reservation by its journal key, with an audit note."""
@@ -1728,6 +1793,9 @@ def funpay_release_cmd(message):
                 message.chat.id,
                 "❌ У заказа есть или могло быть создано предложение Steam. Используй /fpofferresolve КЛЮЧ accepted|returned после проверки истории Steam."
             )
+            return
+        if record.get("status") == "retry_required" and not record.get("reservation"):
+            bot.send_message(message.chat.id, "❌ Резерва уже нет; заказ ожидает новые данные, а не снятие резерва.")
             return
         if record.get("status") == "delivered":
             bot.send_message(message.chat.id, "❌ Нельзя снять резерв с уже выданного заказа.")
@@ -1818,12 +1886,14 @@ def build_funpay_dashboard_text():
     cache = load_json(CACHE_FILE, {})
     available_sets, _ = count_available_sets(cache) if cache else (0, [])
     reserved = sum(1 for order in orders if order.get("reservation"))
-    pending = sum(1 for order in orders if order.get("status") in {"awaiting_input", "input_received"})
-    review = counts.get("review", 0)
-    delivered = counts.get("delivered", 0)
+    pending = sum(1 for order in orders if order.get("status") in {"awaiting_input", "input_received", "reserved", "retry_required"})
+    review = sum(counts.get(status, 0) for status in {"review", "delivery_uncertain"})
+    offers_sent = counts.get("offer_sent", 0)
+    offers_pending_confirmation = counts.get("offer_pending_confirmation", 0)
+    completed = counts.get("completed", 0)
     cancelled = counts.get("cancelled", 0)
-    mode = policy.get("input_mode", "file")
-    mode_label = {"file": "📎 Файл", "chat": "💬 Чат", "both": "📎 Файл + 💬 Чат"}.get(mode, mode)
+    mode = policy.get("input_mode", "both")
+    mode_label = {"file": "📎 Текстовый файл", "chat": "💬 Чат", "both": "💬 Чат + 📎 текстовый файл"}.get(mode, mode)
 
     return (
         "📊 <b>ПАНЕЛЬ FUNPAY</b>\n"
@@ -1836,12 +1906,14 @@ def build_funpay_dashboard_text():
         f"⏳ Ожидают данные: <b>{pending}</b>\n"
         f"📌 Зарезервировано заказов: <b>{reserved}</b>\n"
         f"🛡 Требуют проверки: <b>{review}</b>\n"
-        f"✅ Отмечены выданными: <b>{delivered}</b>\n"
+        f"📤 Steam-предложений создано: <b>{offers_sent}</b>\n"
+        f"🕒 Ожидают подтверждения ASF: <b>{offers_pending_confirmation}</b>\n"
+        f"✅ Сделки вручную подтверждены: <b>{completed}</b>\n"
         f"🚫 Отменены: <b>{cancelled}</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"📨 Приём ссылки: <b>{html.escape(mode_label)}</b>\n"
-        "🚦 Автовыдача покупателям: <b>ВЫКЛЮЧЕНА</b>\n"
-        "🔒 Защита модерации: <b>АКТИВНА</b>\n"
+        f"🚦 Автовыдача по чату/текстовому файлу: <b>{'ВКЛЮЧЕНА' if policy.get('auto_delivery') else 'ВЫКЛЮЧЕНА'}</b>\n"
+        "🔒 Проверка домена, формата файла, уникальности заказа и дублей: <b>АКТИВНА</b>\n"
         + (f"⚠️ Последняя ошибка: <code>{html.escape(str(fp_state.get('error'))[:250])}</code>\n" if fp_state.get("error") else "")
         + "\n<i>Это информационная панель. Открытие не запускает выдачу и не меняет настройки.</i>"
     )
