@@ -1253,6 +1253,57 @@ def reset_voucher_cmd(message):
         bot.send_message(message.chat.id, f"❌ Код `{code}` не найден в базе.", parse_mode="Markdown")
 
 
+@bot.message_handler(commands=["fpcoldstart"])
+def funpay_cold_start_cmd(message):
+    """Safely archive and clear only the FunPay order ledger after confirmation."""
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    if message.chat.id != db.get("admin_id") or message.from_user.id != db.get("admin_id"):
+        return
+
+    parts = (message.text or "").strip().split(maxsplit=1)
+    with funpay_orders_lock:
+        data = load_funpay_orders()
+        orders = data.get("orders", {})
+        if len(parts) < 2 or parts[1].strip().upper() != "CONFIRM":
+            counts = {}
+            for item in orders.values():
+                if isinstance(item, dict):
+                    status = str(item.get("status", "unknown"))
+                    counts[status] = counts.get(status, 0) + 1
+            summary = ", ".join(f"{status}: {count}" for status, count in sorted(counts.items())) or "нет записей"
+            bot.send_message(
+                message.chat.id,
+                "🧹 <b>Подготовка к чистому старту FunPay</b>\\n"
+                f"Записей в журнале: {len(orders)}\\nСтатусы: {html.escape(summary)}\\n\\n"
+                "Команда удалит только журнал заказов FunPay после создания резервной копии. "
+                "Склад, кэш карточек, коды, настройки и Playerok не изменятся.\\n"
+                "Если заказов действительно нет и ты хочешь продолжить, отправь: "
+                "<code>/fpcoldstart CONFIRM</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        if not orders:
+            bot.send_message(message.chat.id, "Журнал FunPay уже пуст. Склад и остальные данные не менялись.")
+            return
+
+        import shutil
+        from datetime import datetime
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = f"{FP_ORDERS_FILE}.backup_{stamp}.json"
+        shutil.copy2(FP_ORDERS_FILE, backup_path)
+        save_json(FP_ORDERS_FILE, {"orders": {}})
+        logging.warning("Admin requested FunPay cold start; archived %s orders to %s", len(orders), backup_path)
+
+    bot.send_message(
+        message.chat.id,
+        "✅ Журнал заказов FunPay очищен. Резервная копия сохранена: "
+        f"<code>{html.escape(backup_path)}</code>\\n"
+        "Кэш склада, карточки, коды, настройки и данные Playerok не затронуты.",
+        parse_mode="HTML",
+    )
+
+
 @bot.message_handler(commands=["fporders"])
 def funpay_orders_cmd(message):
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
