@@ -442,7 +442,7 @@ def record_funpay_buyer_input(node_id, trade_url, input_kind):
                 item for item in data["orders"].values()
                 if isinstance(item, dict)
                 and str(item.get("node_id")) == str(node_id)
-                and item.get("status") in {"sending", "awaiting_input", "input_received", "reserved", "review", "retry_required"}
+                and item.get("status") in {"sending", "delivery_uncertain", "awaiting_input", "input_received", "reserved", "review", "retry_required"}
             ]
             if len(candidates) > 1:
                 return None, "ambiguous", "В этом чате несколько активных заказов."
@@ -1720,7 +1720,7 @@ def funpay_offer_resolve_cmd(message):
     if len(parts) != 3 or parts[2].lower() not in {"accepted", "returned"}:
         bot.send_message(
             message.chat.id,
-            "Использование: /fpofferresolve КЛЮЧ accepted|returned\\n"
+            "Использование: /fpofferresolve КЛЮЧ accepted|returned\n"
             "Команда допустима только после ручной проверки истории предложения в Steam."
         )
         return
