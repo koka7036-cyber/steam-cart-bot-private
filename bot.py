@@ -386,8 +386,8 @@ def restore_reservation_to_cache(reservation):
     return True
 
 
-def reserve_funpay_order(record):
-    """Reserve exact card asset IDs once, before a buyer can be processed."""
+def reserve_funpay_order(record, ledger_data=None):
+    """Reserve exact card asset IDs once, journal them first, then update the cache."""
     with delivery_lock:
         if record.get("reservation"):
             return True, "Резерв уже существует."
@@ -406,6 +406,9 @@ def reserve_funpay_order(record):
         }
         record["status"] = "reserved"
         record["updated_at"] = int(time.time())
+        # Journal the exact asset reservation before changing the cache on disk.
+        if ledger_data is not None:
+            save_json(FP_ORDERS_FILE, ledger_data)
         save_json(CACHE_FILE, updated_cache)
         return True, "Карточки зарезервированы."
 
@@ -419,7 +422,9 @@ def register_funpay_payment(node_id, buyer, text, sets_per_item, quantity):
             sets_per_item=sets_per_item, quantity=quantity,
         )
         if created:
-            reserve_funpay_order(record)
+            # Register the paid order first; then persist exact asset IDs before cache mutation.
+            save_json(FP_ORDERS_FILE, data)
+            reserve_funpay_order(record, data)
             save_json(FP_ORDERS_FILE, data)
         return record, created
 
@@ -463,7 +468,7 @@ def record_funpay_buyer_input(node_id, trade_url, input_kind):
             return record, "uncertain", "Результат предыдущей попытки неизвестен; повторная отправка заблокирована."
 
         if not record.get("reservation"):
-            reserved, reserve_message = reserve_funpay_order(record)
+            reserved, reserve_message = reserve_funpay_order(record, data)
             if not reserved or not record.get("reservation"):
                 record["status"] = "review"
                 record["updated_at"] = int(time.time())
@@ -597,42 +602,12 @@ def download_funpay_text_attachment(session, attachment_url, chat_url):
 
 
 def apply_reserved_assets_to_cache(cache_data, orders=None, vouchers=None):
-    """Keep assets reserved in outgoing offers out of the available stock cache."""
-    if not isinstance(cache_data, dict):
-        return cache_data
+    """Filter the current cache using persistent FunPay and voucher reservations."""
     if orders is None:
         orders = load_funpay_orders().get("orders", {})
     if vouchers is None:
-        vouchers = load_json(DB_FILE, {"vouchers": {}}).get("vouchers", {})
-
-    reserved_ids = set()
-    if isinstance(orders, dict):
-        for record in orders.values():
-            if not isinstance(record, dict) or record.get("status") == "cancelled":
-                continue
-            reservation = record.get("reservation")
-            if isinstance(reservation, dict):
-                reserved_ids.update(str(aid) for aid in reservation.get("asset_ids", []) if str(aid))
-    if isinstance(vouchers, dict):
-        for voucher in vouchers.values():
-            if not isinstance(voucher, dict):
-                continue
-            state = voucher.get("delivery_state")
-            if state in {"sending", "uncertain", "sent", "created_unconfirmed"} or (
-                voucher.get("used") and voucher.get("trade_offer_id")
-            ):
-                reserved_ids.update(str(aid) for aid in voucher.get("reserved_asset_ids", []) if str(aid))
-
-    if not reserved_ids:
-        return cache_data
-    games = cache_data.get("games", {})
-    for game_name, cards in games.items():
-        for card_name, asset_ids in cards.items():
-            cards[card_name] = [str(aid) for aid in asset_ids if str(aid) not in reserved_ids]
-    cache_data["total_cards"] = sum(
-        len(asset_ids) for cards in games.values() for asset_ids in cards.values()
-    )
-    return cache_data
+        vouchers = load_json(DB_FILE, {"admin_id": None, "vouchers": {}}).get("vouchers", {})
+    return filter_reserved_assets(cache_data, orders, vouchers)
 
 
 def funpay_check_unread_chats():
