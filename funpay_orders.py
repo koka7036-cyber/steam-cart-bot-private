@@ -121,3 +121,186 @@ def mark_input_received(record: dict, input_kind: str) -> None:
     record["input_received_at"] = int(time.time())
     record["updated_at"] = int(time.time())
     record["status"] = "input_received"
+
+# --- Safe FunPay chat/file parsing helpers ---
+from html.parser import HTMLParser as _HTMLParser
+from urllib.parse import urljoin as _urljoin, urlparse as _urlparse, unquote as _urlunquote
+
+
+class _FunPayChatMessageParser(_HTMLParser):
+    """Extract text and links from message containers without adding dependencies."""
+
+    _VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.messages = []
+        self.current = None
+        self.stack = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = set((attrs.get("class") or "").split())
+        tag = tag.lower()
+        if self.current is None:
+            if tag == "div" and "chat-msg-item" in classes:
+                match = re.search(r"message-(\d+)", attrs.get("id", ""))
+                self.current = {
+                    "id": match.group(1) if match else None,
+                    "text_parts": [],
+                    "body_parts": [],
+                    "links": [],
+                }
+                self.stack = [(tag, classes)]
+            return
+
+        if tag not in self._VOID_TAGS:
+            self.stack.append((tag, classes))
+        if tag == "a" and attrs.get("href"):
+            self.current["links"].append({
+                "href": attrs.get("href", ""),
+                "class": attrs.get("class", ""),
+                "download": attrs.get("download", ""),
+                "title": attrs.get("title", ""),
+            })
+        if tag == "br":
+            self.current["text_parts"].append("\n")
+            if any("chat-msg-text" in item_classes for _, item_classes in self.stack):
+                self.current["body_parts"].append("\n")
+
+    def handle_data(self, data):
+        if self.current is None:
+            return
+        self.current["text_parts"].append(data)
+        if any("chat-msg-text" in item_classes for _, item_classes in self.stack):
+            self.current["body_parts"].append(data)
+
+    def handle_endtag(self, tag):
+        if self.current is None:
+            return
+        tag = tag.lower()
+        match_index = None
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index][0] == tag:
+                match_index = index
+                break
+        if match_index is None:
+            return
+        closes_message = match_index == 0 and "chat-msg-item" in self.stack[0][1]
+        del self.stack[match_index:]
+        if closes_message:
+            body_text = "".join(self.current.pop("body_parts")).strip()
+            all_text = "".join(self.current.pop("text_parts")).strip()
+            self.current["text"] = body_text or all_text
+            self.messages.append(self.current)
+            self.current = None
+            self.stack = []
+
+
+def extract_funpay_chat_messages(markup: str) -> list[dict]:
+    """Return message text, message ID and links for each rendered chat message."""
+    parser = _FunPayChatMessageParser()
+    try:
+        parser.feed(markup or "")
+        parser.close()
+    except Exception:
+        return []
+    return parser.messages
+
+
+def _host_is_allowed_file_source(host: str, trusted_hosts=()) -> bool:
+    host = (host or "").lower().rstrip(".")
+    if host == "funpay.com" or host.endswith(".funpay.com"):
+        return True
+    for trusted in trusted_hosts or ():
+        allowed = str(trusted).lower().strip().rstrip(".")
+        if allowed and (host == allowed or host.endswith("." + allowed)):
+            return True
+    return False
+
+
+def extract_text_file_urls_from_links(links, base_url="https://funpay.com/", trusted_hosts=()) -> list[str]:
+    """Find direct .txt attachment links; reject unsafe schemes and unknown non-text files."""
+    found = []
+    for link in links or ():
+        if not isinstance(link, dict):
+            continue
+        href = str(link.get("href") or "").strip()
+        if not href:
+            continue
+        candidate = _urljoin(base_url, href)
+        parsed = _urlparse(candidate)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            continue
+        path_name = _urlunquote(parsed.path).lower()
+        download_name = str(link.get("download") or link.get("title") or "").lower()
+        direct_text_file = path_name.endswith(".txt")
+        named_text_attachment = download_name.endswith(".txt")
+        if not direct_text_file and not named_text_attachment:
+            continue
+        if not _host_is_allowed_file_source(parsed.hostname, trusted_hosts) and not direct_text_file:
+            continue
+        if parsed.port not in (None, 443):
+            continue
+        candidate = parsed._replace(fragment="").geturl()
+        if candidate not in found:
+            found.append(candidate)
+    return found
+
+
+def extract_text_file_urls_from_text(text: str, trusted_hosts=()) -> list[str]:
+    """Find explicit HTTPS .txt URLs in message text, not arbitrary web links."""
+    found = []
+    for match in re.findall(r"https://[^\s<>\"']+", text or "", re.IGNORECASE):
+        candidate = match.rstrip(".,;:!?)]}")
+        parsed = _urlparse(candidate)
+        if parsed.scheme != "https" or not parsed.hostname or not _urlunquote(parsed.path).lower().endswith(".txt"):
+            continue
+        if parsed.username or parsed.password or parsed.port not in (None, 443):
+            continue
+        if candidate not in found:
+            found.append(candidate)
+    return found
+
+
+def decode_text_file_trade_url(data: bytes, filename: str = "", content_type: str = "", max_bytes: int = 65536):
+    """Decode a small text file and return exactly one valid Steam trade URL.
+
+    Returns (url, None) on success or (None, reason_code) on failure.
+    The payload is never saved to disk or logged.
+    """
+    if not isinstance(data, (bytes, bytearray)):
+        return None, "not_bytes"
+    if len(data) > max_bytes:
+        return None, "file_too_large"
+    filename = str(filename or "").lower().strip()
+    content_type = str(content_type or "").split(";", 1)[0].lower().strip()
+    if not filename.endswith(".txt") and content_type not in {"text/plain", "text/x-plain", "application/octet-stream"}:
+        return None, "not_plain_text"
+    if b"\x00" in data[:4096]:
+        return None, "binary_file"
+
+    decoded = None
+    for encoding in ("utf-8-sig", "utf-8", "cp1251"):
+        try:
+            decoded = bytes(data).decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if decoded is None:
+        return None, "encoding_unsupported"
+
+    raw_candidates = []
+    for candidate in STEAM_TRADE_URL_RE.findall(decoded):
+        candidate = candidate.rstrip(".,;:!?)]}")
+        if candidate not in raw_candidates:
+            raw_candidates.append(candidate)
+    if not raw_candidates:
+        return None, "trade_url_missing"
+    if len(raw_candidates) != 1:
+        return None, "trade_url_ambiguous"
+
+    url = extract_steam_trade_url(decoded)
+    if not url:
+        return None, "trade_url_invalid"
+    return url, None
