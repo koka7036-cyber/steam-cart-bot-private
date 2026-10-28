@@ -1,5 +1,5 @@
 """Regression tests for safe FunPay order matching."""
-from funpay_orders import (decode_text_attachment, extract_steam_trade_url, extract_text_attachment_href, find_open_order_for_chat, mark_input_received, register_payment)
+from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, find_open_order_for_chat, mark_input_received, register_payment)
 
 
 def make_order(key, node_id="123", status="awaiting_input", updated_at=1):
@@ -191,3 +191,30 @@ def test_decode_text_attachment_enforces_size_limit():
 def test_retry_required_order_is_open_for_corrected_input():
     order = make_order("retry", status="retry_required")
     assert find_open_order_for_chat({"retry": order}, "123") is order
+
+
+
+def test_extract_last_chat_message_fragment_does_not_reuse_old_trade_link_for_latest_file():
+    old_url = "https://steamcommunity.com/tradeoffer/new/?partner=123&token=OLD"
+    html_doc = (
+        '<div class="chat-msg-item"><div class="chat-msg-text">' + old_url + '</div></div>'
+        '<div class="chat-msg-item"><div class="chat-msg-file">'
+        '<a href="/file/765" title="trade-url.txt">trade-url.txt</a>'
+        '</div></div>'
+    )
+    fragment = extract_last_chat_message_fragment(html_doc)
+    assert fragment is not None
+    assert "token=OLD" not in fragment
+    assert "trade-url.txt" in fragment
+    assert extract_text_attachment_href(
+        fragment, "https://funpay.com/chat/?node=987"
+    ) == "https://funpay.com/file/765"
+
+
+def test_extract_last_chat_message_fragment_returns_latest_text():
+    html_doc = (
+        '<div class="chat-msg-item"><div class="chat-msg-text">old</div></div>'
+        '<div class="chat-msg-item"><div class="chat-msg-text">new</div></div>'
+    )
+    assert "new" in extract_last_chat_message_fragment(html_doc)
+    assert "old" not in extract_last_chat_message_fragment(html_doc)
