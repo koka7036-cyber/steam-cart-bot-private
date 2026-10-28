@@ -14,7 +14,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
 
-OPEN_STATUSES = {"awaiting_input", "input_received", "reserved", "review"}
+OPEN_STATUSES = {"awaiting_input", "input_received", "reserved", "review", "retry_required"}
 
 
 
