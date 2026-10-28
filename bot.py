@@ -278,7 +278,7 @@ def send_funpay_chat_message(node_id, text):
         return False, f"Ошибка отправки: {e}"
 
 from order_parser import detect_order_sets_and_quantity, is_paid_order_notification
-from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, is_funpay_system_message, mark_input_received, register_payment, message_signature)
+from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, funpay_cold_start_blockers, inventory_cache_freshness_error, is_funpay_system_message, mark_input_received, register_payment, message_signature)
 from sales_analytics import summarize_sales
 from playerok_orders import (
     active_orders_for_chat,
@@ -1070,6 +1070,9 @@ def pick_cards_for_sets(sets_needed):
     games = cache_data.get("games", {})
     if not games:
         return None, None, "Кэш пуст! Нажми «🔄 Обновить кэш склада»."
+    freshness_error = inventory_cache_freshness_error(cache_data)
+    if freshness_error:
+        return None, None, freshness_error
 
     selected_assets = []
     asset_locations = []
@@ -1675,6 +1678,24 @@ def funpay_cold_start_cmd(message):
                 "Если заказов действительно нет и ты хочешь продолжить, отправь: "
                 "<code>/fpcoldstart CONFIRM</code>",
                 parse_mode="HTML",
+            )
+            return
+
+        blockers = funpay_cold_start_blockers(orders)
+        if blockers:
+            preview = ", ".join(
+                f"{key} ({status})" for key, status in blockers[:5]
+            )
+            more = f" и ещё {len(blockers) - 5}" if len(blockers) > 5 else ""
+            bot.send_message(
+                message.chat.id,
+                "❌ Журнал FunPay не очищен: есть незавершённые заказы или активные резервы. "
+                "Очистка потеряла бы защиту от повторной продажи тех же карточек.\n"
+                f"Заказы: {html.escape(preview + more)}\n"
+                "Сначала завершите заказ или выполните /fprelease только если Steam-предложение точно не создавалось. "
+                "Для отправленного/неопределённого предложения сначала проверьте Steam и используйте "
+                "/fpofferresolve КЛЮЧ accepted|returned.\n"
+                "После завершения всех заказов команда /fpcoldstart CONFIRM снова станет доступна."
             )
             return
 
