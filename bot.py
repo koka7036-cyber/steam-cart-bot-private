@@ -278,7 +278,7 @@ def send_funpay_chat_message(node_id, text):
         return False, f"Ошибка отправки: {e}"
 
 from order_parser import detect_order_sets_and_quantity, is_paid_order_notification
-from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, funpay_cold_start_blockers, inventory_cache_freshness_error, is_funpay_system_message, mark_input_received, register_payment, message_signature, voucher_reset_block_reason)
+from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, funpay_cold_start_blockers, inventory_cache_freshness_error, is_funpay_system_message, mark_input_received, register_payment, message_signature, voucher_redemption_block_reason, voucher_reset_block_reason)
 from sales_analytics import summarize_sales
 from playerok_orders import (
     active_orders_for_chat,
@@ -1195,11 +1195,11 @@ def execute_delivery(chat_id, code, trade_url, db):
         if not isinstance(voucher, dict) or voucher.get("used"):
             bot.send_message(chat_id, "❌ Этот пин-код не найден или уже был активирован ранее!")
             return False
-        if voucher.get("delivery_state") in {"sending", "uncertain"}:
+        redemption_block = voucher_redemption_block_reason(voucher)
+        if redemption_block:
             bot.send_message(
                 chat_id,
-                "⚠️ Результат предыдущей попытки обмена не подтверждён. Код временно заблокирован, "
-                "чтобы не отправить карточки повторно. Администратор должен проверить историю Steam."
+                f"⚠️ Выдача кода заблокирована: {redemption_block}"
             )
             return False
         return _execute_delivery_locked(chat_id, code, trade_url, current_db)
