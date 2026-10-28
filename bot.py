@@ -1137,7 +1137,9 @@ def build_admin_keyboard():
     markup.add("🟢 Коды FunPay (1 сет)", "🟢 Коды FunPay (5 сетов)")
     markup.add("🔵 Коды Playerok (1 сет)", "🔵 Коды Playerok (5 сетов)")
     auto_label = "⚙️ Автозапуск Windows: ВКЛ 🟢" if is_autostart_enabled() else "⚙️ Автозапуск Windows: ВЫКЛ 🔴"
-    markup.add("🟢 Статус FunPay 24/7", auto_label)
+    # The FunPay dashboard is the single admin entry point for connection,
+    # order and delivery-safety status. Keep the duplicate status button hidden.
+    markup.add(auto_label)
     markup.add("📋 Панель FunPay — сводка")
     markup.add("📈 Продажи и склад")
     markup.add("🔵 Playerok — панель")
