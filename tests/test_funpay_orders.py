@@ -135,3 +135,75 @@ def test_extract_steam_trade_url_rejects_ambiguous_multiple_links():
     a = "https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc"
     b = "https://steamcommunity.com/tradeoffer/new/?partner=456&token=def"
     assert extract_steam_trade_url(a + "\\n" + b) is None
+
+
+def test_parse_funpay_chat_messages_extracts_message_text_and_links():
+    from funpay_orders import extract_funpay_chat_messages
+
+    markup = '''
+    <div class="chat-msg-item" id="message-123">
+      <div class="chat-msg-body">
+        <div class="chat-msg-text">Trade URL is below<br>second line</div>
+        <a class="chat-file-link" href="/files/trade.txt" download="trade.txt">trade.txt</a>
+      </div>
+    </div>
+    '''
+    messages = extract_funpay_chat_messages(markup)
+    assert len(messages) == 1
+    assert messages[0]["id"] == "123"
+    assert "Trade URL is below" in messages[0]["text"]
+    assert messages[0]["links"][0]["href"] == "/files/trade.txt"
+
+
+def test_text_file_parser_extracts_valid_trade_url_utf8():
+    from funpay_orders import decode_text_file_trade_url
+
+    url = "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=AbCdEf12"
+    result, error = decode_text_file_trade_url(("Моя ссылка: " + url).encode("utf-8"), "steam.txt", "text/plain")
+    assert result == url
+    assert error is None
+
+
+def test_text_file_parser_supports_windows_1251():
+    from funpay_orders import decode_text_file_trade_url
+
+    url = "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=AbCdEf12"
+    result, error = decode_text_file_trade_url(("Трейд-ссылка: " + url).encode("cp1251"), "steam.txt", "text/plain")
+    assert result == url
+    assert error is None
+
+
+def test_text_file_parser_rejects_multiple_trade_urls():
+    from funpay_orders import decode_text_file_trade_url
+
+    text = (
+        "https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc\\n"
+        "https://steamcommunity.com/tradeoffer/new/?partner=456&token=def"
+    )
+    result, error = decode_text_file_trade_url(text.encode("utf-8"), "steam.txt", "text/plain")
+    assert result is None
+    assert error == "trade_url_ambiguous"
+
+
+def test_text_file_parser_rejects_binary_or_oversized_file():
+    from funpay_orders import decode_text_file_trade_url
+
+    result, error = decode_text_file_trade_url(b"abc\\x00def", "steam.txt", "text/plain")
+    assert result is None
+    assert error == "binary_file"
+    result, error = decode_text_file_trade_url(b"x" * 65537, "steam.txt", "text/plain")
+    assert result is None
+    assert error == "file_too_large"
+
+
+def test_text_file_link_parser_rejects_unsafe_schemes_and_accepts_https_txt():
+    from funpay_orders import extract_text_file_urls_from_links
+
+    links = [
+        {"href": "javascript:alert(1)", "download": "steam.txt"},
+        {"href": "http://funpay.com/files/steam.txt"},
+        {"href": "https://files.example.com/steam.txt"},
+        {"href": "/files/not-a-text-file.png", "download": "image.png"},
+    ]
+    result = extract_text_file_urls_from_links(links)
+    assert result == ["https://files.example.com/steam.txt"]
