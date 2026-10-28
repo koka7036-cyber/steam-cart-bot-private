@@ -77,6 +77,36 @@ logging.basicConfig(
     encoding="utf-8"
 )
 
+# Telegram may reject malformed Markdown/HTML in dynamic text. Retry only
+# entity-parsing failures as plain text; preserve all other API errors.
+_original_send_message = bot.send_message
+_original_edit_message_text = bot.edit_message_text
+
+def _send_message_with_plain_text_fallback(*args, **kwargs):
+    try:
+        return _original_send_message(*args, **kwargs)
+    except Exception as exc:
+        error = str(exc).lower()
+        if "can't parse entities" not in error and "can't find end of the entity" not in error:
+            raise
+        kwargs.pop("parse_mode", None)
+        logging.warning("Telegram rejected message entities; retrying as plain text.")
+        return _original_send_message(*args, **kwargs)
+
+def _edit_message_with_plain_text_fallback(*args, **kwargs):
+    try:
+        return _original_edit_message_text(*args, **kwargs)
+    except Exception as exc:
+        error = str(exc).lower()
+        if "can't parse entities" not in error and "can't find end of the entity" not in error:
+            raise
+        kwargs.pop("parse_mode", None)
+        logging.warning("Telegram rejected edited-message entities; retrying as plain text.")
+        return _original_edit_message_text(*args, **kwargs)
+
+bot.send_message = _send_message_with_plain_text_fallback
+bot.edit_message_text = _edit_message_with_plain_text_fallback
+
 # --- МОДУЛЬ 1: АВТОЗАПУСК WINDOWS ---
 def is_autostart_enabled():
     try:
@@ -1131,18 +1161,38 @@ def start_playerok_monitor():
     else:
         logging.info("Playerok monitor not configured; no Playerok account was accessed.")
 
+ADMIN_MAIN_MENU = "🏠 Главное меню"
+ADMIN_BACK_MENU = "⬅️ Назад"
+admin_menu_state = {}
+
 def build_admin_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("🔄 Обновить кэш склада", "📊 Остатки в кэше")
-    markup.add("🟢 Коды FunPay (1 сет)", "🟢 Коды FunPay (5 сетов)")
-    markup.add("🔵 Коды Playerok (1 сет)", "🔵 Коды Playerok (5 сетов)")
-    auto_label = "⚙️ Автозапуск Windows: ВКЛ 🟢" if is_autostart_enabled() else "⚙️ Автозапуск Windows: ВЫКЛ 🔴"
-    # The FunPay dashboard is the single admin entry point for connection,
-    # order and delivery-safety status. Keep the duplicate status button hidden.
-    markup.add(auto_label)
-    markup.add("📋 Панель FunPay — сводка")
-    markup.add("📈 Продажи и склад")
-    markup.add("🔵 Playerok — панель")
+    db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
+    admin_id = db.get("admin_id")
+    section = admin_menu_state.get(admin_id, "main")
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+
+    if section == "stock":
+        markup.add("🔄 Обновить кэш склада", "📊 Остатки в кэше")
+        markup.add("🟢 Коды FunPay (1 сет)", "🟢 Коды FunPay (5 сетов)")
+        markup.add("🔵 Коды Playerok (1 сет)", "🔵 Коды Playerok (5 сетов)")
+        markup.add(ADMIN_BACK_MENU)
+    elif section == "funpay":
+        markup.add("📋 Панель FunPay — сводка", "📋 Последние заказы FunPay")
+        markup.add("🔄 Проверить соединение FunPay", ADMIN_BACK_MENU)
+    elif section == "playerok":
+        markup.add("🔵 Playerok — панель", "📋 Последние сделки Playerok")
+        markup.add(ADMIN_BACK_MENU)
+    elif section == "sales":
+        markup.add("📈 Продажи и склад", "📊 Остатки в кэше")
+        markup.add("🔄 Обновить кэш склада", ADMIN_BACK_MENU)
+    elif section == "settings":
+        auto_label = "⚙️ Автозапуск Windows: ВКЛ 🟢" if is_autostart_enabled() else "⚙️ Автозапуск Windows: ВЫКЛ 🔴"
+        markup.add(auto_label)
+        markup.add("🔄 Проверить состояние бота", ADMIN_BACK_MENU)
+    else:
+        markup.add("📦 Склад и коды", "🟢 FunPay")
+        markup.add("🔵 Playerok", "📈 Продажи и аналитика")
+        markup.add("⚙️ Настройки")
     return markup
 
 def build_customer_keyboard():
@@ -1576,8 +1626,48 @@ def handle_all_messages(message):
     text = (message.text or "").strip()
     db = load_json(DB_FILE, {"admin_id": None, "vouchers": {}})
 
-    # The catch-all handler is registered before the dashboard-specific handler.
-    # Route the admin dashboard button here so it cannot be swallowed by this handler.
+    # Admin navigation is handled here so all existing actions can reuse
+    # build_admin_keyboard() and return to the currently open submenu.
+    if message.chat.id == db.get("admin_id"):
+        section_buttons = {
+            "📦 Склад и коды": "stock",
+            "🟢 FunPay": "funpay",
+            "🔵 Playerok": "playerok",
+            "📈 Продажи и аналитика": "sales",
+            "⚙️ Настройки": "settings",
+        }
+        if text in section_buttons:
+            admin_menu_state[message.chat.id] = section_buttons[text]
+            bot.send_message(message.chat.id, "Выбери действие в разделе:", reply_markup=build_admin_keyboard())
+            return
+        if text in {ADMIN_BACK_MENU, ADMIN_MAIN_MENU}:
+            admin_menu_state[message.chat.id] = "main"
+            bot.send_message(message.chat.id, "Главное меню:", reply_markup=build_admin_keyboard())
+            return
+        if text == "📋 Последние заказы FunPay":
+            funpay_orders_cmd(message)
+            return
+        if text == "📋 Последние сделки Playerok":
+            bot.send_message(message.chat.id, build_playerok_dashboard_text(show_orders=True), reply_markup=build_playerok_dashboard_markup(), parse_mode="HTML")
+            return
+        if text == "🔄 Проверить соединение FunPay":
+            bot.send_message(message.chat.id, "Статус подключения отображается в сводке FunPay. Обновление состояния выполняется фоновым монитором.", reply_markup=build_admin_keyboard())
+            return
+        if text == "🔄 Проверить состояние бота":
+            cfg = load_json(FP_CONFIG_FILE, {})
+            playerok_configured = bool(os.getenv("PLAYEROK_TOKEN", "").strip())
+            diagnostics = (
+                "🔎 <b>Диагностика</b>\\n"
+                f"FunPay: {'ключ настроен' if str(cfg.get('golden_key', '')).strip() else 'ключ не задан'}\\n"
+                f"Playerok: {'токен задан' if playerok_configured else 'не настроен'}\\n"
+                f"Автозапуск Windows: {'включён' if is_autostart_enabled() else 'выключен'}\\n"
+                "Автовыдача FunPay: приостановлена защитой модерации.\\n"
+                "Автовыдача Playerok: выключена."
+            )
+            bot.send_message(message.chat.id, diagnostics, reply_markup=build_admin_keyboard(), parse_mode="HTML")
+            return
+
+    # Route the dashboard action explicitly before general customer processing.
     if text == "📋 Панель FunPay — сводка" and message.chat.id == db.get("admin_id"):
         show_funpay_dashboard(message)
         return
