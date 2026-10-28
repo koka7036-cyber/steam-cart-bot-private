@@ -23,7 +23,7 @@ def is_paid_order_notification(order_text):
         r"\bплат[её]ж\s+(?:получен|успешен|подтвержден)\b",
         r"\bпереведите\s+(?:товар|покупателю)\b",
         r"\bbuyer\b[\s\S]{0,120}\bpaid\s+(?:for\s+)?(?:order\b)?",
-        r"\border\s+(?:has\s+been\s+)?paid\b",
+        r"\border\s*(?:#[A-Z0-9]{4,24})?\s+(?:has\s+been\s+)?paid\b",
         r"\bpayment\s+(?:was\s+)?(?:received|successful|confirmed)\b",
     )
     return any(re.search(pattern, text) for pattern in paid_markers)
