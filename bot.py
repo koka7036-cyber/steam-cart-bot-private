@@ -278,7 +278,7 @@ def send_funpay_chat_message(node_id, text):
         return False, f"Ошибка отправки: {e}"
 
 from order_parser import detect_order_sets_and_quantity, is_paid_order_notification
-from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, mark_input_received, register_payment, message_signature)
+from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, is_funpay_system_message, mark_input_received, register_payment, message_signature)
 from sales_analytics import summarize_sales
 from playerok_orders import (
     active_orders_for_chat,
@@ -736,7 +736,10 @@ def funpay_check_unread_chats():
                 continue
 
             lower_txt = full_text.lower()
-            is_order_payment = is_paid_order_notification(full_text)
+            is_order_payment = (
+                is_funpay_system_message(last_message_html)
+                and is_paid_order_notification(full_text)
+            )
             sets_per_item, order_quantity = detect_order_sets_and_quantity(full_text)
             mentions_product = any(term in lower_txt for term in
                                     ("карт", "сет", "level", "уровень", "steam", "карточ"))
