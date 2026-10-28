@@ -238,6 +238,60 @@ def decode_text_attachment(data: bytes, max_bytes: int = _MAX_TEXT_ATTACHMENT_BY
     raise ValueError("Не удалось прочитать файл как обычный текст UTF-8/UTF-16/Windows-1251.") from last_error
 
 
+def filter_reserved_assets(cache_data: dict, orders: dict | None = None,
+                          vouchers: dict | None = None) -> dict:
+    """Return a stock cache with assets belonging to pending/uncertain offers removed."""
+    if not isinstance(cache_data, dict):
+        return {}
+    orders = orders if isinstance(orders, dict) else {}
+    vouchers = vouchers if isinstance(vouchers, dict) else {}
+
+    reserved_ids = set()
+    for record in orders.values():
+        if not isinstance(record, dict) or record.get("status") == "cancelled":
+            continue
+        reservation = record.get("reservation")
+        if isinstance(reservation, dict):
+            reserved_ids.update(
+                str(asset_id) for asset_id in reservation.get("asset_ids", [])
+                if str(asset_id)
+            )
+
+    reserved_voucher_states = {"sending", "uncertain", "sent", "created_unconfirmed"}
+    for voucher in vouchers.values():
+        if not isinstance(voucher, dict):
+            continue
+        if voucher.get("delivery_state") in reserved_voucher_states or (
+            voucher.get("used") and voucher.get("trade_offer_id")
+        ):
+            reserved_ids.update(
+                str(asset_id) for asset_id in voucher.get("reserved_asset_ids", [])
+                if str(asset_id)
+            )
+
+    filtered = dict(cache_data)
+    filtered_games = {}
+    games = cache_data.get("games", {})
+    if isinstance(games, dict):
+        for game_name, cards in games.items():
+            if not isinstance(cards, dict):
+                continue
+            filtered_cards = {}
+            for card_name, asset_ids in cards.items():
+                if not isinstance(asset_ids, list):
+                    continue
+                filtered_cards[card_name] = [
+                    str(asset_id) for asset_id in asset_ids
+                    if str(asset_id) not in reserved_ids
+                ]
+            filtered_games[game_name] = filtered_cards
+    filtered["games"] = filtered_games
+    filtered["total_cards"] = sum(
+        len(asset_ids) for cards in filtered_games.values() for asset_ids in cards.values()
+    )
+    return filtered
+
+
 def extract_order_number(text: str) -> str | None:
     """Extract the visible FunPay order number when it is present in a message."""
     match = re.search(r"(?:заказ|order)\s*[№#]?\s*(\d{4,})", text or "", re.IGNORECASE)
