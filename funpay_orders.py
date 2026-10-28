@@ -128,7 +128,12 @@ def decode_text_attachment(data: bytes, max_bytes: int = _MAX_TEXT_ATTACHMENT_BY
     if len(data) > max_bytes:
         raise ValueError(f"Текстовый файл превышает лимит {max_bytes} байт.")
     payload = bytes(data)
-    encodings = ("utf-8-sig", "utf-16", "cp1251")
+    # UTF-16 must be detected by its BOM; otherwise CP1251's single-byte decoder
+    # can parse UTF-16/incorrect binary bytes into plausible-looking gibberish.
+    if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encodings = ("utf-16", "utf-8-sig", "cp1251")
+    else:
+        encodings = ("utf-8-sig", "cp1251", "utf-16")
     last_error = None
     for encoding in encodings:
         try:
