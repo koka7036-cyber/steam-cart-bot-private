@@ -1,5 +1,5 @@
 """Regression tests for safe FunPay order matching."""
-from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, mark_input_received, register_payment)
+from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, is_funpay_system_message, mark_input_received, register_payment)
 from order_parser import is_paid_order_notification
 
 
@@ -294,3 +294,21 @@ def test_explicit_paid_order_notification_is_recognized():
 def test_negative_payment_text_is_not_treated_as_paid():
     assert not is_paid_order_notification("Покупатель не оплатил заказ #123456: 1 сет Steam")
     assert not is_paid_order_notification("Оплата не прошла")
+
+
+
+def test_system_message_requires_funpay_alert_marker():
+    assert is_funpay_system_message('<div role="alert">Покупатель Alex оплатил заказ #ABC12345</div>')
+    assert is_funpay_system_message(
+        '<div class="alert alert-with-icon alert-info">Заказ оплачен</div>'
+    )
+    assert not is_funpay_system_message(
+        '<div class="chat-msg-text">Покупатель Alex оплатил заказ #ABC12345</div>'
+    )
+
+
+def test_funpay_order_number_can_contain_letters():
+    from funpay_orders import extract_order_number, payment_key
+    text = "Покупатель Alex оплатил заказ #ABC12345. Лот: Steam cards"
+    assert extract_order_number(text) == "ABC12345"
+    assert payment_key("123", text) == "fp-order-ABC12345"
