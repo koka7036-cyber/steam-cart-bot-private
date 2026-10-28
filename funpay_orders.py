@@ -75,7 +75,7 @@ class _AttachmentLinkParser(HTMLParser):
         label = " ".join(attrs.get(key, "") for key in ("title", "aria-label", "data-name", "data-filename", "download"))
         href = attrs.get("href", "")
         inherited_context = any(item[1] for item in self._stack)
-        own_context = bool(re.search(r"(?:attachment|chat-msg-file|file-upload|file-attachment)", class_tokens))
+        own_context = bool(re.search(r"(?:attachment|chat-msg-file|file-upload|file-attachment|chat-msg-item)", class_tokens))
         filename_hint = _is_text_filename(label) or _is_text_filename(href)
         is_file_link = tag.lower() == "a" and bool(href) and (
             inherited_context or own_context or filename_hint or "download" in attrs
