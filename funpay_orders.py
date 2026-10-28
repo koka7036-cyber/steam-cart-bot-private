@@ -293,9 +293,30 @@ def filter_reserved_assets(cache_data: dict, orders: dict | None = None,
     return filtered
 
 
+def is_funpay_system_message(html_fragment: str) -> bool:
+    """Trust payment text only inside FunPay's alert block used for system-authored messages."""
+    if not html_fragment:
+        return False
+    # FunPay's own parser identifies system messages via author_id == 0 and extracts
+    # message text from a div[role=alert] or .alert.alert-with-icon.alert-info.
+    # A buyer can imitate the wording but cannot make their chat message a system alert.
+    return bool(
+        re.search(r"<[^>]+\brole\s*=\s*(['\"])alert\1", html_fragment, re.IGNORECASE)
+        or re.search(
+            r"<[^>]+\bclass\s*=\s*(['\"])[^'\"]*\balert-with-icon\b[^'\"]*\balert-info\b[^'\"]*\1",
+            html_fragment,
+            re.IGNORECASE,
+        )
+    )
+
+
 def extract_order_number(text: str) -> str | None:
-    """Extract the visible FunPay order number when it is present in a message."""
-    match = re.search(r"(?:заказ|order)\s*[№#]?\s*(\d{4,})", text or "", re.IGNORECASE)
+    """Extract a FunPay order identifier (which may contain letters)."""
+    match = re.search(
+        r"(?:заказ|order)\s*[№#]?\s*([A-Z0-9]{4,24})",
+        text or "",
+        re.IGNORECASE,
+    )
     return match.group(1) if match else None
 
 
