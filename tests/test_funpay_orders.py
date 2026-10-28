@@ -1,5 +1,5 @@
 """Regression tests for safe FunPay order matching."""
-from funpay_orders import find_open_order_for_chat, mark_input_received, register_payment
+from funpay_orders import extract_steam_trade_url, find_open_order_for_chat, mark_input_received, register_payment
 
 
 def make_order(key, node_id="123", status="awaiting_input", updated_at=1):
@@ -116,3 +116,22 @@ def test_message_signature_is_stable_and_does_not_expose_preview():
 def test_message_signature_changes_when_preview_changes():
     from funpay_orders import message_signature
     assert message_signature("Buyer", "payment") != message_signature("Buyer", "file attached")
+
+
+def test_extract_steam_trade_url_from_plain_text():
+    url = "https://steamcommunity.com/tradeoffer/new/?partner=123456&token=AbCdEf12"
+    assert extract_steam_trade_url("Steam trade link: " + url) == url
+
+
+def test_extract_steam_trade_url_rejects_non_steam_hosts():
+    assert extract_steam_trade_url("https://example.com/tradeoffer/new/?partner=123&token=abc") is None
+
+
+def test_extract_steam_trade_url_rejects_missing_token():
+    assert extract_steam_trade_url("https://steamcommunity.com/tradeoffer/new/?partner=123") is None
+
+
+def test_extract_steam_trade_url_rejects_ambiguous_multiple_links():
+    a = "https://steamcommunity.com/tradeoffer/new/?partner=123&token=abc"
+    b = "https://steamcommunity.com/tradeoffer/new/?partner=456&token=def"
+    assert extract_steam_trade_url(a + "\\n" + b) is None
