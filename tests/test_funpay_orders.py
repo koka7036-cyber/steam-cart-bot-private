@@ -1,5 +1,5 @@
 """Regression tests for safe FunPay order matching."""
-from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, funpay_cold_start_blockers, inventory_cache_freshness_error, is_funpay_system_message, mark_input_received, register_payment, voucher_reset_block_reason)
+from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, funpay_cold_start_blockers, inventory_cache_freshness_error, is_funpay_system_message, mark_input_received, register_payment, voucher_redemption_block_reason, voucher_reset_block_reason)
 from order_parser import is_paid_order_notification
 
 
@@ -373,3 +373,23 @@ def test_reset_allows_unused_voucher_or_definite_failed_attempt():
         "used": False, "delivery_state": "failed", "delivery_error": "rejected"
     }) is None
     assert voucher_reset_block_reason(None) is not None
+
+
+
+def test_redemption_guard_blocks_stale_reset_state_even_when_used_is_false():
+    assert voucher_redemption_block_reason({
+        "used": False, "delivery_state": "sent", "trade_offer_id": "987654"
+    }) is not None
+    assert voucher_redemption_block_reason({
+        "used": False, "delivery_state": "created_unconfirmed", "reserved_asset_ids": ["1"]
+    }) is not None
+    assert voucher_redemption_block_reason({
+        "used": False, "delivery_state": "sending", "reserved_asset_ids": ["1"]
+    }) is not None
+
+
+def test_redemption_guard_allows_new_or_definitely_failed_code():
+    assert voucher_redemption_block_reason({"used": False}) is None
+    assert voucher_redemption_block_reason({
+        "used": False, "delivery_state": "failed"
+    }) is None
