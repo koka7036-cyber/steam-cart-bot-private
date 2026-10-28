@@ -24,7 +24,7 @@ def extract_steam_trade_url(text: str) -> str | None:
     source = text or ""
     # Reject multiple Steam trade-link occurrences before parsing. A malformed
     # separator (including a literal \\n) must not let two URLs merge into one match.
-    if len(re.findall(r"https?://steamcommunity\\.com/tradeoffer/new/\\?", source, re.IGNORECASE)) > 1:
+    if len(re.findall(r"https?://steamcommunity\.com/tradeoffer/new/\?", source, re.IGNORECASE)) > 1:
         return None
     matches = STEAM_TRADE_URL_RE.findall(source)
     normalized = []
