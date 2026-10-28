@@ -1,5 +1,5 @@
 """Regression tests for safe FunPay order matching."""
-from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, is_funpay_system_message, mark_input_received, register_payment)
+from funpay_orders import (decode_text_attachment, extract_last_chat_message_fragment, extract_steam_trade_url, extract_text_attachment_href, filter_reserved_assets, find_open_order_for_chat, funpay_cold_start_blockers, inventory_cache_freshness_error, is_funpay_system_message, mark_input_received, register_payment)
 from order_parser import is_paid_order_notification
 
 
@@ -312,3 +312,41 @@ def test_funpay_order_number_can_contain_letters():
     text = "Покупатель Alex оплатил заказ #ABC12345. Лот: Steam cards"
     assert extract_order_number(text) == "ABC12345"
     assert payment_key("123", text) == "fp-order-ABC12345"
+
+
+
+def test_cold_start_is_blocked_for_unresolved_orders_and_reservations():
+    orders = {
+        "completed": {"status": "completed", "reservation": None},
+        "cancelled": {"status": "cancelled", "reservation": None},
+        "paid": {"status": "reserved", "reservation": {"asset_ids": ["123"]}},
+        "sent": {"status": "offer_sent", "reservation": {"asset_ids": ["456"]}},
+        "review": {"status": "review", "reservation": None},
+    }
+    assert funpay_cold_start_blockers(orders) == [
+        ("paid", "reserved"),
+        ("sent", "offer_sent"),
+        ("review", "review"),
+    ]
+
+
+def test_cold_start_allows_only_terminal_orders_without_reservations():
+    assert funpay_cold_start_blockers({
+        "completed": {"status": "completed", "reservation": None},
+        "cancelled": {"status": "cancelled", "reservation": None},
+    }) == []
+    assert funpay_cold_start_blockers({
+        "bad": {"status": "completed", "reservation": {"asset_ids": ["1"]}}
+    }) == [("bad", "completed")]
+
+
+def test_inventory_cache_freshness_guard():
+    now = 1_800_000_000
+    assert inventory_cache_freshness_error({"updated_at": now, "games": {}}, now=now) is None
+    assert "устарел" in inventory_cache_freshness_error(
+        {"updated_at": now - 7 * 3600, "games": {}}, now=now
+    )
+    assert "времени обновления" in inventory_cache_freshness_error({"games": {}}, now=now)
+    assert "некорректным" in inventory_cache_freshness_error(
+        {"updated_at": now + 600, "games": {}}, now=now
+    )
