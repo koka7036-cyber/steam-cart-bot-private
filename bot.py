@@ -278,7 +278,7 @@ def send_funpay_chat_message(node_id, text):
         return False, f"Ошибка отправки: {e}"
 
 from order_parser import detect_order_sets_and_quantity
-from funpay_orders import find_open_order_for_chat, mark_input_received, register_payment, message_signature
+from funpay_orders import extract_steam_trade_url, find_open_order_for_chat, mark_input_received, register_payment, message_signature
 from sales_analytics import summarize_sales
 from playerok_orders import (
     active_orders_for_chat,
@@ -305,7 +305,7 @@ def get_funpay_delivery_policy():
     cfg = load_json(FP_CONFIG_FILE, {})
     return {
         "input_mode": str(cfg.get("delivery_input_mode", "file")).lower(),
-        "allow_chat_trade_url": cfg.get("allow_chat_trade_url") is True,
+        "allow_chat_trade_url": cfg.get("allow_chat_trade_url", True) is True,
         # This remains false regardless of preferences until the account has
         # explicit written approval for a fully automated delivery method.
         "auto_delivery": False,
@@ -529,9 +529,7 @@ def funpay_check_unread_chats():
                         f"Автовыдача в FunPay отключена. Покупателю ничего не отправлялось."
                     )
             else:
-                has_trade_url = bool(re.search(
-                    r"https?://steamcommunity\.com/tradeoffer/new/\?[^\s<]+", full_text, re.IGNORECASE
-                ))
+                has_trade_url = extract_steam_trade_url(full_text) is not None
                 has_file = bool(re.search(
                     r"(?:chat-msg-(?:file|attachment)|data-type=['\"]attachment['\"])", last_message_html, re.IGNORECASE
                 ) or re.search(r"\b(?:файл|вложение|attachment)\b", msg_preview, re.IGNORECASE))
